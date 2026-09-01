@@ -1,6 +1,5 @@
 # Developer-local configuration and credentials
 local.properties
-app/google-services.json
 sha-256 key/
 .env
 .env.*
