@@ -1,0 +1,327 @@
+package com.noki.vpn.data
+
+import java.util.Locale
+
+object EndpointRankingPolicy {
+    private const val DEFAULT_SCORE = 70
+    private const val SUCCESS_SCORE_DELTA = 8
+    private const val FAILURE_SCORE_DELTA = 25
+    private const val SLOW_SCORE_DELTA = 15
+    private const val COOLDOWN_MILLIS = 10 * 60 * 1000L
+    private const val LATENCY_FRESH_MILLIS = 6 * 60 * 60 * 1000L
+    private const val SCORE_RECOVERY_INTERVAL_MILLIS = 24 * 60 * 60 * 1000L
+    private const val SCORE_RECOVERY_STEP = 8
+
+    enum class NetworkKind {
+        WIFI,
+        CELLULAR,
+        OTHER,
+    }
+
+    data class Selection(
+        val candidate: BackendEndpointCandidate,
+        val endpointClass: String,
+        val rotationKey: String,
+    )
+
+    fun select(
+        candidates: List<BackendEndpointCandidate>,
+        health: Map<String, EndpointHealth>,
+        networkKind: NetworkKind,
+        nowMillis: Long,
+        rotationIndex: (String) -> Int,
+        excludedCodes: Set<String> = emptySet(),
+        allowHysteria: Boolean = false,
+    ): Selection? {
+        val eligibleWithoutCooldown = eligibleCandidates(
+            candidates = candidates,
+            health = health,
+            nowMillis = nowMillis,
+            excludedCodes = excludedCodes,
+            includeHysteria = allowHysteria ||
+                shouldIncludeAutoHysteria(candidates, networkKind, excludedCodes),
+        )
+        val eligible = eligibleWithoutCooldown.ifEmpty {
+            eligibleCandidates(
+                candidates = candidates,
+                health = health,
+                nowMillis = nowMillis,
+                excludedCodes = excludedCodes,
+                includeHysteria = allowHysteria ||
+                    shouldIncludeAutoHysteria(candidates, networkKind, excludedCodes),
+                ignoreCooldown = true,
+            )
+        }
+        if (eligible.isEmpty()) return null
+
+        return preferredClasses(networkKind, allowHysteria)
+            .asSequence()
+            .mapNotNull { endpointClass ->
+                val classCandidates = eligible.filter { classify(it) == endpointClass }
+                if (classCandidates.isEmpty()) return@mapNotNull null
+
+                val minPriority = classCandidates.minOf { it.priority }
+                val sameTier = classCandidates.filter { it.priority == minPriority }
+                val rankedTier = sameTier.sortedWith(candidateSelectionComparator(health, nowMillis))
+                val best = rankedTier.first()
+                val bestHealth = health[best.code]
+                val bestScore = effectiveScore(bestHealth, nowMillis)
+                val bestLatency = freshLatency(bestHealth, nowMillis)
+                val bestWeight = best.weight
+                val bestTier = rankedTier.filter { candidate ->
+                    val candidateHealth = health[candidate.code]
+                    effectiveScore(candidateHealth, nowMillis) == bestScore &&
+                        freshLatency(candidateHealth, nowMillis) == bestLatency &&
+                        candidate.weight == bestWeight
+                }
+                val rotationKey = rotationKeyFor(endpointClass, sameTier)
+                val index = rotationIndex(rotationKey).floorMod(bestTier.size)
+                val candidate = bestTier[index]
+                Selection(
+                    candidate = candidate,
+                    endpointClass = endpointClass,
+                    rotationKey = rotationKey,
+                )
+            }
+            .firstOrNull()
+    }
+
+    fun rankCandidates(
+        candidates: List<BackendEndpointCandidate>,
+        health: Map<String, EndpointHealth>,
+        networkKind: NetworkKind,
+        nowMillis: Long,
+    ): List<BackendEndpointCandidate> {
+        val eligibleWithoutCooldown = eligibleCandidates(
+            candidates = candidates,
+            health = health,
+            nowMillis = nowMillis,
+            includeHysteria = shouldIncludeAutoHysteria(candidates, networkKind),
+        )
+        val eligible = eligibleWithoutCooldown.ifEmpty {
+            eligibleCandidates(
+                candidates = candidates,
+                health = health,
+                nowMillis = nowMillis,
+                includeHysteria = shouldIncludeAutoHysteria(candidates, networkKind),
+                ignoreCooldown = true,
+            )
+        }
+        if (eligible.isEmpty()) return emptyList()
+
+        val classOrder = preferredClasses(networkKind)
+        val known = classOrder.flatMap { endpointClass ->
+            eligible
+                .filter { classify(it) == endpointClass }
+                .sortedWith(candidateSelectionComparator(health, nowMillis))
+        }
+        return known
+    }
+
+    fun selectWarmupCandidates(
+        rankedCandidates: List<BackendEndpointCandidate>,
+        health: Map<String, EndpointHealth>,
+        maxCandidates: Int,
+    ): List<BackendEndpointCandidate> {
+        val limit = maxCandidates.coerceAtLeast(0)
+        val best = rankedCandidates.firstOrNull() ?: return emptyList()
+        if (limit == 0) return emptyList()
+        if (limit == 1) return listOf(best)
+
+        val explorationCandidate = rankedCandidates
+            .drop(1)
+            .minByOrNull { candidate ->
+                health[candidate.code]?.lastUpdatedAtMillis ?: Long.MIN_VALUE
+            }
+        return buildList {
+            add(best)
+            explorationCandidate?.let(::add)
+            if (size < limit) {
+                rankedCandidates.asSequence()
+                    .filterNot { candidate -> any { it.code == candidate.code } }
+                    .take(limit - size)
+                    .forEach(::add)
+            }
+        }
+    }
+
+    fun updateAfterResult(
+        previous: EndpointHealth = EndpointHealth(),
+        success: Boolean,
+        nowMillis: Long,
+        slow: Boolean = false,
+        latencyMs: Long? = null,
+    ): EndpointHealth {
+        val delta = when {
+            success -> SUCCESS_SCORE_DELTA
+            slow -> -SLOW_SCORE_DELTA
+            else -> -FAILURE_SCORE_DELTA
+        }
+        val nextScore = (effectiveScore(previous, nowMillis) + delta).coerceIn(0, 100)
+        val shouldCooldown = !success
+        val normalizedLatency = latencyMs?.takeIf { success && it > 0L }
+        val nextLatency = normalizedLatency?.let { sample ->
+            previous.latencyEwmaMs?.let { old -> ((old * 3L) + sample) / 4L } ?: sample
+        } ?: previous.latencyEwmaMs
+        return previous.copy(
+            score = nextScore,
+            successCount = if (success) previous.successCount + 1 else previous.successCount,
+            failureCount = if (success) previous.failureCount else previous.failureCount + 1,
+            cooldownUntilMillis = if (shouldCooldown) nowMillis + COOLDOWN_MILLIS else 0L,
+            lastUpdatedAtMillis = nowMillis,
+            latencyEwmaMs = nextLatency,
+            latencyUpdatedAtMillis = if (normalizedLatency != null) nowMillis else previous.latencyUpdatedAtMillis,
+        )
+    }
+
+    fun ratingSnapshot(
+        codes: List<String>,
+        health: Map<String, EndpointHealth>,
+    ): String {
+        return codes
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .joinToString(";") { code ->
+                val score = health[code]?.score ?: DEFAULT_SCORE
+                "$code=$score"
+            }
+    }
+
+    private fun preferredClasses(
+        networkKind: NetworkKind,
+        allowHysteria: Boolean = false,
+    ): List<String> {
+        return when (networkKind) {
+            NetworkKind.WIFI -> listOf(CLASS_REALITY_TCP, CLASS_REALITY_XHTTP_STREAM, CLASS_REALITY_XHTTP_PACKET, CLASS_TLS_TCP, CLASS_HYSTERIA)
+            NetworkKind.CELLULAR -> listOf(CLASS_REALITY_XHTTP_STREAM, CLASS_REALITY_XHTTP_PACKET, CLASS_REALITY_TCP, CLASS_TLS_TCP, CLASS_HYSTERIA)
+            NetworkKind.OTHER -> listOf(
+                CLASS_REALITY_XHTTP_STREAM,
+                CLASS_REALITY_XHTTP_PACKET,
+                CLASS_REALITY_TCP,
+                CLASS_TLS_TCP,
+            ) + if (allowHysteria) listOf(CLASS_HYSTERIA) else emptyList()
+        }
+    }
+
+    private fun classify(candidate: BackendEndpointCandidate): String {
+        val security = candidate.security.lowercase(Locale.ROOT)
+        val transport = candidate.normalizedTransport()
+        val mode = candidate.normalizedTransportMode()
+        return when {
+            security == "reality" && transport == "tcp" -> CLASS_REALITY_TCP
+            security == "reality" && transport == "xhttp" && mode == "stream-up" -> CLASS_REALITY_XHTTP_STREAM
+            security == "reality" && transport == "xhttp" && mode == "packet-up" -> CLASS_REALITY_XHTTP_PACKET
+            security == "tls" && transport == "tcp" -> CLASS_TLS_TCP
+            EndpointTransportPolicy.isHysteria(candidate) -> CLASS_HYSTERIA
+            else -> CLASS_OTHER
+        }
+    }
+
+    private fun eligibleCandidates(
+        candidates: List<BackendEndpointCandidate>,
+        health: Map<String, EndpointHealth>,
+        nowMillis: Long,
+        excludedCodes: Set<String> = emptySet(),
+        includeHysteria: Boolean = false,
+        ignoreCooldown: Boolean = false,
+    ): List<BackendEndpointCandidate> {
+        return candidates
+            .filter { !it.canaryOnly }
+            .filter { it.entryHost.isNotBlank() }
+            .filter { it.code !in excludedCodes }
+            .filter(EndpointSecurityPolicy::isAllowedCandidate)
+            .filter { includeHysteria || !EndpointTransportPolicy.isHysteria(it) }
+            .filter { candidate ->
+                val state = health[candidate.code]
+                ignoreCooldown || state == null || state.cooldownUntilMillis <= nowMillis
+            }
+    }
+
+    private fun shouldIncludeAutoHysteria(
+        candidates: List<BackendEndpointCandidate>,
+        networkKind: NetworkKind,
+        excludedCodes: Set<String> = emptySet(),
+    ): Boolean {
+        if (networkKind != NetworkKind.CELLULAR) return false
+        return candidates.any {
+            EndpointTransportPolicy.isHysteria(it) &&
+                !it.canaryOnly &&
+                EndpointSecurityPolicy.isAllowedCandidate(it) &&
+                it.code !in excludedCodes
+        }
+    }
+
+    private fun candidateSelectionComparator(
+        health: Map<String, EndpointHealth>,
+        nowMillis: Long,
+    ): Comparator<BackendEndpointCandidate> {
+        return compareBy<BackendEndpointCandidate> { it.priority }
+            .thenByDescending { effectiveScore(health[it.code], nowMillis) }
+            .thenBy { freshLatency(health[it.code], nowMillis) ?: Long.MAX_VALUE }
+            .thenByDescending { it.weight }
+            .thenBy { it.code }
+    }
+
+    private fun effectiveScore(
+        health: EndpointHealth?,
+        nowMillis: Long,
+    ): Int {
+        val score = health?.score ?: return DEFAULT_SCORE
+        val updatedAt = health.lastUpdatedAtMillis
+        if (updatedAt <= 0L || nowMillis <= updatedAt || score == DEFAULT_SCORE) return score
+        val elapsedIntervals = (nowMillis - updatedAt) / SCORE_RECOVERY_INTERVAL_MILLIS
+        if (elapsedIntervals <= 0L) return score
+        val recovery = (elapsedIntervals * SCORE_RECOVERY_STEP).coerceAtMost(100L).toInt()
+        return if (score < DEFAULT_SCORE) {
+            (score + recovery).coerceAtMost(DEFAULT_SCORE)
+        } else {
+            (score - recovery).coerceAtLeast(DEFAULT_SCORE)
+        }
+    }
+
+    private fun freshLatency(
+        health: EndpointHealth?,
+        nowMillis: Long,
+    ): Long? {
+        val latency = health?.latencyEwmaMs ?: return null
+        val age = nowMillis - health.latencyUpdatedAtMillis
+        return latency.takeIf { age in 0..LATENCY_FRESH_MILLIS }
+    }
+
+    private fun rotationKeyFor(
+        endpointClass: String,
+        candidates: List<BackendEndpointCandidate>,
+    ): String {
+        val location = candidates.firstOrNull()?.locationCode?.ifBlank { "all" } ?: "all"
+        val priority = candidates.minOfOrNull { it.priority } ?: 0
+        return "$location:$endpointClass:$priority"
+    }
+
+    private fun Int.floorMod(divisor: Int): Int {
+        if (divisor <= 0) return 0
+        val value = this % divisor
+        return if (value < 0) value + divisor else value
+    }
+
+    private const val CLASS_REALITY_TCP = "reality-tcp"
+    private const val CLASS_REALITY_XHTTP_STREAM = "reality-xhttp-stream"
+    private const val CLASS_REALITY_XHTTP_PACKET = "reality-xhttp-packet"
+    private const val CLASS_TLS_TCP = "tls-tcp"
+    private const val CLASS_HYSTERIA = "hysteria"
+    private const val CLASS_OTHER = "other"
+}
+
+internal fun BackendEndpointCandidate.normalizedTransport(): String {
+    return when (transport.lowercase(Locale.ROOT)) {
+        "raw" -> "tcp"
+        "hysteria2", "hy2" -> "hysteria"
+        else -> transport.lowercase(Locale.ROOT).ifBlank { "tcp" }
+    }
+}
+
+internal fun BackendEndpointCandidate.normalizedTransportMode(): String {
+    val mode = transportMode.orEmpty().lowercase(Locale.ROOT).trim()
+    if (mode.isNotBlank()) return mode
+    return if (normalizedTransport() == "xhttp") "stream-up" else ""
+}

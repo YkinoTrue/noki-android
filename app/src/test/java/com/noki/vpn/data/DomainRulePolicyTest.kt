@@ -1,0 +1,44 @@
+package com.noki.vpn.data
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class DomainRulePolicyTest {
+    @Test
+    fun urlBecomesAnchoredDomainRule() {
+        assertEquals(
+            "domain:example.com",
+            DomainRulePolicy.normalize(" https://Example.COM/path "),
+        )
+    }
+
+    @Test
+    fun ipAndInvalidHostAreRejected() {
+        assertNull(DomainRulePolicy.normalize("192.168.1.1"))
+        assertNull(DomainRulePolicy.normalize("bad host"))
+    }
+
+    @Test
+    fun addingAlwaysRuleRemovesEquivalentBypass() {
+        val next = DomainRulePolicy.addAlways(
+            AdvancedSettings(bypassDomains = listOf("domain:example.com")),
+            "example.com",
+        )
+
+        assertEquals(listOf("domain:example.com"), next.alwaysOnDomains)
+        assertTrue(next.bypassDomains.isEmpty())
+    }
+
+    @Test
+    fun addingBypassRuleRemovesEquivalentAlwaysRule() {
+        val next = DomainRulePolicy.addBypass(
+            AdvancedSettings(alwaysOnDomains = listOf("domain:example.com")),
+            "EXAMPLE.COM",
+        )
+
+        assertEquals(listOf("domain:example.com"), next.bypassDomains)
+        assertTrue(next.alwaysOnDomains.isEmpty())
+    }
+}

@@ -1,0 +1,74 @@
+package com.noki.vpn.data
+
+import java.util.Locale
+
+object DefaultStoredSettingsFactory {
+    const val FULL_GLASS_MIN_API_LEVEL = 33
+
+    private val defaultRussianDirectPackages = setOf(
+        "ru.rostel",
+        "ru.sberbankmobile",
+        "com.idamob.tinkoff.android",
+        "ru.alfabank.mobile.android",
+        "ru.vtb24.mobilebanking.android",
+        "ru.gazprombank.android.mobilebank.app",
+        "ru.nspk.mirpay",
+        "ru.yandex.searchplugin",
+        "ru.yandex.yandexmaps",
+        "ru.yandex.taxi",
+        "ru.beru.android",
+        "ru.yandex.music",
+        "ru.kinopoisk",
+        "ru.dublgis.dgismobile",
+        "ru.ozon.app.android",
+        "com.wildberries.ru",
+        "com.avito.android",
+        "com.vkontakte.android",
+        "ru.ok.android",
+        "ru.mail.mailapp",
+        "ru.rutube.app",
+        "ru.sbcs.store",
+    )
+
+    fun create(
+        locale: Locale = Locale.getDefault(),
+        sdkInt: Int = FULL_GLASS_MIN_API_LEVEL,
+        isFreshInstall: Boolean = true,
+    ): StoredSettings {
+        return StoredSettings(
+            profile = VlessProfile(),
+            filterMode = AppFilterMode.ALL_EXCEPT_SELECTED,
+            selectedPackages = defaultRussianDirectPackages,
+            userProfile = UserProfile(),
+            personalizationSettings = PersonalizationSettings(
+                language = AppLanguage.fromLocale(locale),
+                glassMode = if (isFreshInstall && sdkInt < FULL_GLASS_MIN_API_LEVEL) {
+                    GlassMode.SIMPLE
+                } else {
+                    GlassMode.FULL
+                },
+            ),
+            securitySettings = SecuritySettings(),
+            advancedSettings = AdvancedSettings(
+                anonymousLogsEnabled = isFreshInstall,
+                bypassDomains = listOf(DomainRulePolicy.RUSSIAN_RESOURCES_RULE),
+            ),
+            isAuthenticated = false,
+            backendAccessToken = null,
+            backendRefreshToken = null,
+            backendAccessTokenExpiresInSeconds = null,
+            backendRefreshExpiresAt = null,
+            backendDeviceKey = "",
+            backendDeviceId = "",
+            backendDeviceAccessRole = "owner",
+        )
+    }
+
+    fun normalizeAlwaysOnDomains(domains: List<String>): List<String> {
+        return DomainRulePolicy.normalizeList(domains)
+    }
+
+    fun normalizeBypassDomains(domains: List<String>): List<String> {
+        return DomainRulePolicy.normalizeList(domains)
+    }
+}

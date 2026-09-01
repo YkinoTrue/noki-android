@@ -1,0 +1,166 @@
+diff --git a/libv2ray_main.go b/libv2ray_main.go
+index 0f25725..0b188ee 100644
+--- a/libv2ray_main.go
++++ b/libv2ray_main.go
+@@ -39,11 +39,15 @@ const (
+ 
+ // CoreController represents a controller for managing Xray core instance lifecycle
+ type CoreController struct {
+-	CallbackHandler CoreCallbackHandler
+-	statsManager    corestats.Manager
+-	coreMutex       sync.Mutex
+-	coreInstance    *core.Instance
+-	IsRunning       bool
++	CallbackHandler   CoreCallbackHandler
++	statsManager      corestats.Manager
++	coreMutex         sync.Mutex
++	coreInstance      *core.Instance
++	measureMutex      sync.Mutex
++	measureGeneration uint64
++	measureCancel     context.CancelFunc
++	measureDone       chan struct{}
++	IsRunning         bool
+ }
+ 
+ // CoreCallbackHandler defines interface for receiving callbacks and notifications from the core service
+@@ -130,6 +134,8 @@ func (x *CoreController) StartLoop(configContent string, tunFd int32) (err error
+ // StopLoop safely stops the core processing loop and releases resources
+ // Thread-safe method that shuts down the core instance and triggers necessary callbacks
+ func (x *CoreController) StopLoop() error {
++	x.cancelMeasureDelayAndWait()
++
+ 	x.coreMutex.Lock()
+ 	defer x.coreMutex.Unlock()
+ 
+@@ -192,12 +198,74 @@ func (x *CoreController) QueryAllOutboundTrafficStats() string {
+ // Uses a 12-second timeout context and returns the round-trip time in milliseconds
+ // An error is returned if the connection fails or returns an unexpected status
+ func (x *CoreController) MeasureDelay(url string) (int64, error) {
+-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+-	defer cancel()
++	return x.MeasureDelayWithTimeout(url, 12_000)
++}
++
++// MeasureDelayWithTimeout measures network latency with a caller-supplied timeout.
++func (x *CoreController) MeasureDelayWithTimeout(url string, timeoutMillis int64) (int64, error) {
++	if timeoutMillis <= 0 {
++		return -1, errors.New("timeout must be positive")
++	}
++	ctx, finish := x.beginDelayMeasurement(time.Duration(timeoutMillis) * time.Millisecond)
++	defer finish()
+ 
+ 	return measureInstDelay(ctx, x.coreInstance, url)
+ }
+ 
++// CancelMeasureDelay cancels the controller's current delay measurement.
++func (x *CoreController) CancelMeasureDelay() {
++	x.measureMutex.Lock()
++	cancel := x.measureCancel
++	x.measureMutex.Unlock()
++	if cancel != nil {
++		cancel()
++	}
++}
++
++func (x *CoreController) beginDelayMeasurement(timeout time.Duration) (context.Context, func()) {
++	ctx, cancel := context.WithTimeout(context.Background(), timeout)
++	done := make(chan struct{})
++
++	x.measureMutex.Lock()
++	x.measureGeneration++
++	generation := x.measureGeneration
++	previousCancel := x.measureCancel
++	x.measureCancel = cancel
++	x.measureDone = done
++	x.measureMutex.Unlock()
++
++	if previousCancel != nil {
++		previousCancel()
++	}
++
++	var once sync.Once
++	return ctx, func() {
++		once.Do(func() {
++			cancel()
++			close(done)
++			x.measureMutex.Lock()
++			if x.measureGeneration == generation {
++				x.measureCancel = nil
++				x.measureDone = nil
++			}
++			x.measureMutex.Unlock()
++		})
++	}
++}
++
++func (x *CoreController) cancelMeasureDelayAndWait() {
++	x.measureMutex.Lock()
++	cancel := x.measureCancel
++	done := x.measureDone
++	x.measureMutex.Unlock()
++	if cancel != nil {
++		cancel()
++	}
++	if done != nil {
++		<-done
++	}
++}
++
+ // MeasureOutboundDelay measures the outbound delay for a given configuration and URL
+ func MeasureOutboundDelay(ConfigureFileContent string, url string) (int64, error) {
+ 	config, err := coreserial.LoadJSONConfig(strings.NewReader(ConfigureFileContent))
+diff --git a/libv2ray_measure_test.go b/libv2ray_measure_test.go
+new file mode 100644
+index 0000000..b5e6043
+--- /dev/null
++++ b/libv2ray_measure_test.go
+@@ -0,0 +1,49 @@
++package libv2ray
++
++import (
++	"context"
++	"errors"
++	"testing"
++	"time"
++)
++
++func TestDelayMeasurementHonorsTimeout(t *testing.T) {
++	controller := &CoreController{}
++	ctx, finish := controller.beginDelayMeasurement(10 * time.Millisecond)
++	defer finish()
++
++	<-ctx.Done()
++
++	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
++		t.Fatalf("expected deadline exceeded, got %v", ctx.Err())
++	}
++}
++
++func TestCancelMeasureDelayCancelsActiveMeasurement(t *testing.T) {
++	controller := &CoreController{}
++	ctx, finish := controller.beginDelayMeasurement(time.Second)
++	defer finish()
++
++	controller.CancelMeasureDelay()
++	<-ctx.Done()
++
++	if !errors.Is(ctx.Err(), context.Canceled) {
++		t.Fatalf("expected canceled, got %v", ctx.Err())
++	}
++}
++
++func TestOldCompletionDoesNotClearNewMeasurement(t *testing.T) {
++	controller := &CoreController{}
++	oldCtx, finishOld := controller.beginDelayMeasurement(time.Second)
++	newCtx, finishNew := controller.beginDelayMeasurement(time.Second)
++	defer finishNew()
++
++	<-oldCtx.Done()
++	finishOld()
++	controller.CancelMeasureDelay()
++	<-newCtx.Done()
++
++	if !errors.Is(newCtx.Err(), context.Canceled) {
++		t.Fatalf("expected new measurement to remain cancellable, got %v", newCtx.Err())
++	}
++}

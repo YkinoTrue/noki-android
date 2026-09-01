@@ -1,0 +1,592 @@
+package com.noki.vpn.data
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.util.concurrent.TimeUnit
+
+internal fun defaultBackendControlPlaneClient(): OkHttpClient = OkHttpClient.Builder()
+    .connectTimeout(8, TimeUnit.SECONDS)
+    .readTimeout(12, TimeUnit.SECONDS)
+    .writeTimeout(8, TimeUnit.SECONDS)
+    .callTimeout(30, TimeUnit.SECONDS)
+    .build()
+
+internal fun backendStreamingClient(controlPlaneClient: OkHttpClient): OkHttpClient =
+    controlPlaneClient.newBuilder()
+        .callTimeout(30, TimeUnit.MINUTES)
+        .build()
+
+class BackendApiClient(
+    private val client: OkHttpClient = defaultBackendControlPlaneClient(),
+    baseUrl: String = NokiBackendConfig.apiBaseUrl,
+    streamingClient: OkHttpClient = backendStreamingClient(client),
+) : VpnSessionApi, TemporaryVpnApi, AuthFlowApi, TelegramAuthApi, GoogleAuthApi, TelegramOidcApi,
+    AuthRefreshApi, PasswordRecoveryApi,
+    AccountApi, AccountSecurityApi, DeviceActionApi,
+    BackendBootstrapLoader {
+    private val jsonApi = BackendJsonApi(client, baseUrl, streamingClient)
+    private val baseUrl = jsonApi.baseUrl
+    private val contentClient = BackendContentClient(jsonApi)
+    private val authClient = BackendAuthClient(jsonApi)
+
+    override suspend fun register(
+        username: String,
+        email: String,
+        password: String,
+        verificationCode: String,
+    ) = authClient.register(username, email, password, verificationCode)
+
+    suspend fun sendRegistrationCode(email: String): Int = authClient.sendRegistrationCode(email)
+
+    suspend fun verifyRegistrationCode(email: String, verificationCode: String) =
+        authClient.verifyRegistrationCode(email, verificationCode)
+
+    suspend fun checkRegistrationUsernameAvailable(username: String): Boolean =
+        authClient.checkRegistrationUsernameAvailable(username)
+
+    override suspend fun sendPasswordRecoveryCode(email: String): Int =
+        authClient.sendPasswordRecoveryCode(email)
+
+    override suspend fun verifyPasswordRecoveryCode(email: String, verificationCode: String) =
+        authClient.verifyPasswordRecoveryCode(email, verificationCode)
+
+    override suspend fun resetPassword(email: String, verificationCode: String, newPassword: String) =
+        authClient.resetPassword(email, verificationCode, newPassword)
+
+    override suspend fun deleteAccount(token: String) {
+        jsonApi.execute(
+            Request.Builder()
+                .url(jsonApi.apiUrl("/app/account"))
+                .header("Authorization", "Bearer $token")
+                .delete()
+                .build(),
+        )
+    }
+
+    override suspend fun login(email: String, password: String, deviceId: String?): BackendAuthTokens =
+        authClient.login(email, password, deviceId)
+
+    override suspend fun telegramLogin(idToken: String, deviceId: String?): BackendAuthTokens =
+        authClient.telegramLogin(idToken, deviceId)
+
+    override suspend fun googleLogin(idToken: String, deviceId: String?): BackendAuthTokens =
+        authClient.googleLogin(idToken, deviceId)
+
+    override suspend fun startTelegramOidc(codeChallenge: String, clientState: String): String =
+        authClient.startTelegramOidc(codeChallenge, clientState)
+
+    override suspend fun startTelegramBrowserOidc(codeChallenge: String, clientState: String): String =
+        authClient.startTelegramBrowserOidc(codeChallenge, clientState)
+
+    override suspend fun exchangeTelegramOidcCode(code: String, codeVerifier: String): String =
+        authClient.exchangeTelegramOidcCode(code, codeVerifier)
+
+    override suspend fun exchangeTelegramBrowserOidc(state: String, codeVerifier: String): String =
+        authClient.exchangeTelegramBrowserOidc(state, codeVerifier)
+
+    override suspend fun refreshAuthToken(
+        refreshToken: String,
+        deviceId: String?,
+        requestId: String?,
+    ): BackendAuthTokens = authClient.refreshAuthToken(refreshToken, deviceId, requestId)
+
+    override suspend fun revokeRefreshToken(refreshToken: String) =
+        authClient.revokeRefreshToken(refreshToken)
+
+    override suspend fun sendAccountEmailCode(
+        token: String,
+        email: String,
+        currentDeviceId: String?,
+        currentDeviceKey: String?,
+    ): Int = postJson(
+        path = "/app/security/email-code",
+        payload = JSONObject().put("email", email),
+        token = token,
+        currentDeviceId = currentDeviceId,
+        currentDeviceKey = currentDeviceKey,
+    ).optInt("cooldown_seconds", 60)
+
+    override suspend fun changeAccountEmail(
+        token: String,
+        email: String,
+        verificationCode: String,
+        currentDeviceId: String?,
+        currentDeviceKey: String?,
+    ): BackendUser = BackendUserResponseParser.parse(
+        postJson(
+            path = "/app/security/email",
+            payload = JSONObject()
+                .put("email", email)
+                .put("verification_code", verificationCode),
+            token = token,
+            currentDeviceId = currentDeviceId,
+            currentDeviceKey = currentDeviceKey,
+        ),
+    )
+
+    override suspend fun changeAccountPassword(
+        token: String,
+        currentPassword: String?,
+        newPassword: String,
+        currentDeviceId: String?,
+        currentDeviceKey: String?,
+    ): BackendAccountPasswordChange {
+        val payload = JSONObject().put("new_password", newPassword)
+        currentPassword?.takeIf { it.isNotBlank() }?.let { payload.put("current_password", it) }
+        val response = postJson(
+            path = "/app/security/password",
+            payload = payload,
+            token = token,
+            currentDeviceId = currentDeviceId,
+            currentDeviceKey = currentDeviceKey,
+        )
+        return BackendAccountPasswordChange(
+            user = BackendUserResponseParser.parse(response.getJSONObject("user")),
+            tokens = response.optJSONObject("tokens")?.toBackendAuthTokens(),
+        )
+    }
+
+    override suspend fun changeAccountUsername(
+        token: String,
+        username: String,
+        currentDeviceId: String?,
+        currentDeviceKey: String?,
+    ): BackendUser = BackendUserResponseParser.parse(
+        patchJson(
+            path = "/app/security/username",
+            payload = JSONObject().put("username", username),
+            token = token,
+            currentDeviceId = currentDeviceId,
+            currentDeviceKey = currentDeviceKey,
+        ),
+    )
+
+    override suspend fun linkTelegramAccount(
+        token: String,
+        idToken: String,
+        currentDeviceId: String?,
+        currentDeviceKey: String?,
+    ): BackendUser = BackendUserResponseParser.parse(
+        postJson(
+            path = "/app/security/telegram/link",
+            payload = JSONObject().put("id_token", idToken),
+            token = token,
+            currentDeviceId = currentDeviceId,
+            currentDeviceKey = currentDeviceKey,
+        ),
+    )
+
+    override suspend fun unlinkTelegramAccount(
+        token: String,
+        currentDeviceId: String?,
+        currentDeviceKey: String?,
+    ): BackendUser = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$baseUrl$API_PREFIX/app/security/telegram/link")
+            .header("Authorization", "Bearer $token")
+            .currentDeviceHeaders(currentDeviceId, currentDeviceKey)
+            .delete()
+            .build()
+        BackendUserResponseParser.parse(execute(request))
+    }
+
+    override suspend fun bootstrap(
+        token: String,
+        deviceId: String?,
+        deviceKey: String?,
+    ): BootstrapPayload {
+        val request = Request.Builder()
+            .url("$baseUrl$API_PREFIX/app/bootstrap")
+            .header("Authorization", "Bearer $token")
+            .apply {
+                deviceId?.takeIf { it.isNotBlank() }?.let { header("X-Device-Id", it) }
+                deviceKey?.takeIf { it.isNotBlank() }?.let { header("X-Device-Key", it) }
+            }
+            .get()
+            .build()
+        val json = withContext(Dispatchers.IO) { execute(request) }
+        return BootstrapPayload(
+            user = BackendUserResponseParser.parse(json.getJSONObject("user")),
+            subscription = json.optJSONObject("subscription")?.toBackendSubscription()
+                ?: BackendSubscription("inactive", null, null, null, null),
+            plans = json.optJSONArray("plans").toPlanList(),
+            locations = json.optJSONArray("locations").toLocationList(),
+            devices = json.getJSONArray("devices").toDeviceList(),
+            robokassaReady = json.optBoolean("robokassa_ready", false),
+        )
+    }
+
+    override suspend fun vpnAccess(
+        token: String,
+        deviceId: String?,
+        deviceKey: String?,
+    ): BackendVpnAccess = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$baseUrl$API_PREFIX/vpn/access")
+            .header("Authorization", "Bearer $token")
+            .apply {
+                deviceId?.takeIf { it.isNotBlank() }?.let { header("X-Device-Id", it) }
+                deviceKey?.takeIf { it.isNotBlank() }?.let { header("X-Device-Key", it) }
+            }
+            .get()
+            .build()
+        execute(request).toBackendVpnAccess()
+    }
+
+    override suspend fun registerDevice(
+        token: String,
+        deviceKey: String?,
+        deviceId: String?,
+        deviceName: String,
+        publicKey: String,
+        deviceClaims: List<String>,
+        platform: String,
+    ): BackendDevice {
+        val claims = JSONArray().apply {
+            deviceClaims.forEach { put(it) }
+        }
+        val payload = JSONObject()
+            .put("device_key", deviceKey)
+            .put("device_id", deviceId)
+            .put("device_name", deviceName)
+            .put("platform", platform)
+            .put("public_key", publicKey)
+            .put("key_algorithm", "rsa-sha256")
+            .put("device_claims", claims)
+        return postJson("/devices/register", payload, token).toBackendDevice()
+    }
+
+    override suspend fun createDeviceChallenge(
+        token: String,
+        deviceId: String,
+    ): BackendDeviceChallenge {
+        val payload = JSONObject()
+            .put("device_id", deviceId)
+        return postJson("/devices/challenge", payload, token).toBackendDeviceChallenge()
+    }
+
+    override suspend fun createVpnSession(
+        token: String,
+        deviceId: String,
+        deviceKey: String?,
+        deviceNonce: String,
+        deviceSignature: String,
+        countryCode: String?,
+        locationCode: String?,
+        excludeLocationCode: String?,
+        profileCode: String,
+    ): BackendVpnSession {
+        val payload = JSONObject()
+            .put("device_key", deviceKey)
+            .put("device_id", deviceId)
+            .put("device_nonce", deviceNonce)
+            .put("device_signature", deviceSignature)
+            .put("country_code", countryCode)
+            .put("location_code", locationCode)
+            .put("exclude_location_code", excludeLocationCode)
+            .put("profile_code", profileCode)
+        return postJson("/vpn/session", payload, token).toBackendVpnSession()
+    }
+
+    override suspend fun createTemporaryVpnChallenge(
+        publicKey: String,
+        deviceKey: String,
+        deviceName: String,
+        platform: String,
+    ): BackendTemporaryVpnChallenge {
+        val payload = JSONObject()
+            .put("public_key", publicKey)
+            .put("device_key", deviceKey)
+            .put("device_name", deviceName)
+            .put("platform", platform)
+        return BackendTemporaryVpnResponseParser.parseChallenge(
+            postJson("/auth/temporary-vpn/challenge", payload),
+        )
+    }
+
+    override suspend fun createTemporaryVpnSession(
+        publicKey: String,
+        nonce: String,
+        signature: String,
+        deviceKey: String,
+    ): BackendTemporaryVpnSession {
+        val payload = JSONObject()
+            .put("public_key", publicKey)
+            .put("nonce", nonce)
+            .put("signature", signature)
+            .put("device_key", deviceKey)
+        return BackendTemporaryVpnResponseParser.parseSession(
+            postJson("/auth/temporary-vpn/session", payload),
+        )
+    }
+
+    override suspend fun revokeTemporaryVpnSession(
+        sessionId: String,
+        controlToken: String,
+    ): Unit = withContext(Dispatchers.IO) {
+        val payload = JSONObject()
+            .put("session_id", sessionId)
+            .put("control_token", controlToken)
+        val request = Request.Builder()
+            .url("$baseUrl$API_PREFIX/auth/temporary-vpn/session")
+            .delete(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        execute(request)
+        Unit
+    }
+
+    override suspend fun clearOtherDevices(
+        token: String,
+        currentDeviceId: String?,
+        currentDeviceKey: String?,
+    ): List<BackendDevice> = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$baseUrl$API_PREFIX/devices/others")
+            .header("Authorization", "Bearer $token")
+            .currentDeviceHeaders(currentDeviceId, currentDeviceKey)
+            .delete()
+            .build()
+        executeArray(request).toDeviceList()
+    }
+
+    override suspend fun deleteCurrentDevice(
+        token: String,
+        currentDeviceId: String?,
+        currentDeviceKey: String?,
+    ): Unit = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$baseUrl$API_PREFIX/devices/current")
+            .header("Authorization", "Bearer $token")
+            .currentDeviceHeaders(currentDeviceId, currentDeviceKey)
+            .delete()
+            .build()
+        execute(request)
+        Unit
+    }
+
+    override suspend fun deleteDevice(
+        token: String,
+        deviceId: String,
+        currentDeviceId: String?,
+        currentDeviceKey: String?,
+    ): List<BackendDevice> = withContext(Dispatchers.IO) {
+        val encodedDeviceId = java.net.URLEncoder.encode(deviceId, Charsets.UTF_8.name())
+        val request = Request.Builder()
+            .url("$baseUrl$API_PREFIX/devices/$encodedDeviceId")
+            .header("Authorization", "Bearer $token")
+            .currentDeviceHeaders(currentDeviceId, currentDeviceKey)
+            .delete()
+            .build()
+        executeArray(request).toDeviceList()
+    }
+
+    override suspend fun setDeviceFullAccess(
+        token: String,
+        deviceId: String,
+        fullAccess: Boolean,
+        currentDeviceId: String?,
+        currentDeviceKey: String?,
+    ): List<BackendDevice> = withContext(Dispatchers.IO) {
+        val encodedDeviceId = java.net.URLEncoder.encode(deviceId, Charsets.UTF_8.name())
+        val payload = JSONObject()
+            .put("access_role", if (fullAccess) "owner" else "invited")
+        val request = Request.Builder()
+            .url("$baseUrl$API_PREFIX/devices/$encodedDeviceId/access-role")
+            .header("Authorization", "Bearer $token")
+            .currentDeviceHeaders(currentDeviceId, currentDeviceKey)
+            .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        executeArray(request).toDeviceList()
+    }
+
+    suspend fun createDeviceInvite(
+        token: String,
+        currentDeviceId: String?,
+        currentDeviceKey: String?,
+    ): BackendDeviceInvite = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$baseUrl$API_PREFIX/devices/invites")
+            .header("Authorization", "Bearer $token")
+            .apply {
+                currentDeviceId?.takeIf { it.isNotBlank() }?.let { header("X-Device-Id", it) }
+                currentDeviceKey?.takeIf { it.isNotBlank() }?.let { header("X-Device-Key", it) }
+            }
+            .post(JSONObject().toString().toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        execute(request).toBackendDeviceInvite()
+    }
+
+    suspend fun listIncyDevices(token: String): List<BackendIncyDevice> = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$baseUrl$API_PREFIX/incy/devices")
+            .header("Authorization", "Bearer $token")
+            .get()
+            .build()
+        executeArray(request).toIncyDeviceList()
+    }
+
+    suspend fun createIncyDevice(token: String, name: String): BackendIncyDeviceCreate {
+        val response = postJson("/incy/devices", JSONObject().put("name", name), token)
+        return BackendIncyDeviceCreate(
+            device = response.toBackendIncyDevice(),
+            importLink = response.getString("import_link"),
+        )
+    }
+
+    suspend fun getIncyImportLink(token: String, deviceId: String): IncyImportLink {
+        val id = java.net.URLEncoder.encode(deviceId, Charsets.UTF_8.name())
+        return IncyImportLink.parse(jsonApi.get("/incy/devices/$id/import-link", token).getString("import_link"))
+    }
+
+    suspend fun renameIncyDevice(token: String, deviceId: String, name: String): BackendIncyDevice {
+        val id = java.net.URLEncoder.encode(deviceId, Charsets.UTF_8.name())
+        return patchJson(
+            path = "/incy/devices/$id",
+            payload = JSONObject().put("name", name),
+            token = token,
+            currentDeviceId = null,
+            currentDeviceKey = null,
+        ).toBackendIncyDevice()
+    }
+
+    suspend fun reissueIncyDevice(token: String, deviceId: String): IncyImportLink {
+        val id = java.net.URLEncoder.encode(deviceId, Charsets.UTF_8.name())
+        val response = postJson("/incy/devices/$id/reissue", JSONObject(), token)
+        return IncyImportLink.parse(response.getString("import_link"))
+    }
+
+    suspend fun deleteIncyDevice(token: String, deviceId: String) = withContext(Dispatchers.IO) {
+        val id = java.net.URLEncoder.encode(deviceId, Charsets.UTF_8.name())
+        val request = Request.Builder()
+            .url("$baseUrl$API_PREFIX/incy/devices/$id")
+            .header("Authorization", "Bearer $token")
+            .delete()
+            .build()
+        execute(request)
+        Unit
+    }
+
+    suspend fun acceptDeviceInvite(
+        inviteCode: String,
+        deviceKey: String?,
+        deviceId: String?,
+        deviceName: String,
+        publicKey: String,
+        deviceClaims: List<String>,
+        platform: String = "android",
+    ): BackendInviteAcceptPayload {
+        val claims = JSONArray().apply {
+            deviceClaims.forEach { put(it) }
+        }
+        val payload = JSONObject()
+            .put("invite_code", inviteCode)
+            .put("device_key", deviceKey)
+            .put("device_id", deviceId)
+            .put("device_name", deviceName)
+            .put("platform", platform)
+            .put("public_key", publicKey)
+            .put("key_algorithm", "rsa-sha256")
+            .put("device_claims", claims)
+        val response = postJson("/devices/invites/accept", payload)
+        return BackendInviteAcceptPayload(
+            tokens = response.toBackendAuthTokens(),
+            device = response.getJSONObject("device").toBackendDevice(),
+        )
+    }
+
+    suspend fun uploadAppLogs(
+        token: String,
+        deviceId: String?,
+        deviceKey: String?,
+        deviceName: String,
+        logsText: String,
+        incident: VpnIncidentReport? = null,
+    ) = contentClient.uploadAppLogs(token, deviceId, deviceKey, deviceName, logsText, incident)
+
+    suspend fun uploadEndpointHealthEvents(
+        token: String,
+        events: List<EndpointHealthEvent>,
+    ) = contentClient.uploadEndpointHealthEvents(token, events)
+
+    suspend fun appNotifications(token: String): List<BackendAppNotification> =
+        contentClient.appNotifications(token)
+
+    suspend fun registerFcmToken(
+        token: String,
+        fcmToken: String,
+        deviceId: String?,
+    ) = contentClient.registerFcmToken(token, fcmToken, deviceId)
+
+    suspend fun androidUpdateAvailable(
+        token: String,
+        versionCode: Long,
+        abis: List<String>,
+    ): Boolean = contentClient.androidUpdateAvailable(token, versionCode, abis)
+
+    suspend fun uploadAvatar(
+        token: String,
+        fileName: String,
+        mimeType: String,
+        bytes: ByteArray,
+    ): String = contentClient.uploadAvatar(token, fileName, mimeType, bytes)
+
+    suspend fun deleteAvatar(token: String): String? = contentClient.deleteAvatar(token)
+
+    suspend fun androidUpdate(
+        token: String,
+        versionCode: Long,
+        abis: List<String>,
+    ): BackendAndroidUpdate = contentClient.androidUpdate(token, versionCode, abis)
+
+    suspend fun downloadAndroidUpdateApk(
+        token: String,
+        apkUrl: String,
+        expectedSha256: String?,
+        expectedSizeBytes: Long?,
+        destination: File,
+    ): Long = contentClient.downloadAndroidUpdateApk(
+        token = token,
+        apkUrl = apkUrl,
+        expectedSha256 = expectedSha256,
+        expectedSizeBytes = expectedSizeBytes,
+        destination = destination,
+    )
+
+    suspend fun downloadProfileAvatar(
+        token: String,
+        avatarUrl: String,
+        destination: File,
+    ): File = contentClient.downloadProfileAvatar(token, avatarUrl, destination)
+
+    private suspend fun postJson(
+        path: String,
+        payload: JSONObject,
+        token: String? = null,
+        currentDeviceId: String? = null,
+        currentDeviceKey: String? = null,
+    ): JSONObject = jsonApi.post(path, payload, token, currentDeviceId, currentDeviceKey)
+
+    private suspend fun patchJson(
+        path: String,
+        payload: JSONObject,
+        token: String,
+        currentDeviceId: String?,
+        currentDeviceKey: String?,
+    ): JSONObject = jsonApi.patch(path, payload, token, currentDeviceId, currentDeviceKey)
+
+    private suspend fun execute(request: Request): JSONObject = jsonApi.execute(request)
+
+    private suspend fun executeArray(request: Request): JSONArray = jsonApi.executeArray(request)
+
+    companion object {
+        private const val API_PREFIX = "/v1"
+        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+    }
+}

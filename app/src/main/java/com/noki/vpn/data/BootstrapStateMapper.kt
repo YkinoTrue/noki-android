@@ -1,0 +1,269 @@
+package com.noki.vpn.data
+
+import java.util.Locale
+
+object BootstrapStateMapper {
+    data class Result(
+        val userProfile: UserProfile,
+        val devices: List<DeviceSession>,
+        val locations: List<ServerLocation>,
+        val plans: List<PlanSummary>,
+        val profile: VlessProfile,
+        val currentDeviceAccessRole: String,
+    )
+
+    fun initialDevices(): List<DeviceSession> = emptyList()
+
+    fun initialLocations(): List<ServerLocation> = emptyList()
+
+    fun initialUsageBars(): List<UsageBar> = emptyList()
+
+    fun mapBootstrap(
+        bootstrap: BootstrapPayload,
+        language: AppLanguage,
+        currentUserProfile: UserProfile,
+        currentProfile: VlessProfile,
+        advancedSettings: AdvancedSettings,
+        endpointOptions: List<VpnEndpointOption>,
+        currentDeviceId: String,
+        currentDeviceKey: String,
+        previousDeviceAccessRole: String,
+        clientLatencyByTarget: Map<String, Int>,
+    ): Result {
+        val locations = if (bootstrap.locations.isNotEmpty()) {
+            mapLocations(
+                locations = bootstrap.locations,
+                language = language,
+                clientLatencyByTarget = clientLatencyByTarget,
+            )
+        } else {
+            initialLocations()
+        }
+        val selectedCountryCode = selectedCountryCode(
+            locations = locations,
+            backendLocations = bootstrap.locations,
+            currentCountryCode = currentUserProfile.selectedCountryCode,
+            legacyServerCode = currentUserProfile.selectedServerCode,
+        )
+        val accessRole = bootstrap.devices.firstOrNull { device ->
+            device.id == currentDeviceId || device.deviceKey == currentDeviceKey
+        }?.accessRole?.ifBlank { null } ?: previousDeviceAccessRole.ifBlank { "owner" }
+
+        return Result(
+            userProfile = currentUserProfile.copy(
+                backendUserId = bootstrap.user.id,
+                username = bootstrap.user.username,
+                email = bootstrap.user.email,
+                avatarUri = bootstrap.user.avatarUrl,
+                hasRealEmail = bootstrap.user.hasRealEmail,
+                hasPassword = bootstrap.user.hasPassword,
+                telegramLinked = bootstrap.user.telegramLinked,
+                selectedPlanCode = PlanCode.fromBackend(
+                    bootstrap.subscription.planCode,
+                    currentUserProfile.selectedPlanCode,
+                ),
+                selectedPlanCodeRaw = bootstrap.subscription.planCode?.ifBlank { null }
+                    ?: currentUserProfile.selectedPlanCodeRaw,
+                selectedPlanName = bootstrap.subscription.planName,
+                selectedPlanTier = bootstrap.subscription.planTier,
+                selectedPlanBadgeColor = bootstrap.subscription.planBadgeColor,
+                selectedCountryCode = selectedCountryCode,
+                trafficUsedGb = bootstrap.subscription.trafficUsedGb,
+                trafficLimitGb = bootstrap.subscription.trafficLimitGb,
+                subscriptionExpiresAt = bootstrap.subscription.expiresAt,
+                subscriptionStatus = bootstrap.subscription.status,
+            ),
+            devices = mapDevices(
+                devices = bootstrap.devices,
+                language = language,
+                currentDeviceId = currentDeviceId,
+                currentDeviceKey = currentDeviceKey,
+            ),
+            locations = locations,
+            plans = mapPlans(bootstrap.plans, language),
+            profile = RuntimeProfilePolicy.profileAfterProtocolChange(
+                profile = currentProfile,
+                protocol = advancedSettings.protocol,
+            ),
+            currentDeviceAccessRole = accessRole,
+        )
+    }
+
+    fun selectedCountryCode(
+        locations: List<ServerLocation>,
+        backendLocations: List<BackendLocation>,
+        currentCountryCode: String,
+        legacyServerCode: String,
+    ): String {
+        val normalizedCurrent = currentCountryCode.trim().uppercase(Locale.ROOT)
+        val migratedCountry = backendLocations
+            .firstOrNull { it.code.equals(legacyServerCode.trim(), ignoreCase = true) }
+            ?.countryCode
+            ?.trim()
+            ?.uppercase(Locale.ROOT)
+        return locations.firstOrNull { it.code.equals(normalizedCurrent, ignoreCase = true) }?.code
+            ?: locations.firstOrNull { it.code.equals(migratedCountry, ignoreCase = true) }?.code
+            ?: locations.firstOrNull { it.isOnline }?.code
+            ?: locations.firstOrNull()?.code
+            ?: normalizedCurrent
+    }
+
+    fun mapDevices(
+        devices: List<BackendDevice>,
+        language: AppLanguage,
+        currentDeviceId: String,
+        currentDeviceKey: String,
+    ): List<DeviceSession> {
+        return devices.map { device ->
+            val isCurrent = device.id == currentDeviceId || device.deviceKey == currentDeviceKey
+            DeviceSession(
+                id = device.id,
+                title = device.deviceName.ifBlank { fallbackDeviceName(device.platform, language) },
+                subtitle = buildDeviceSubtitle(device, language, isCurrent),
+                isCurrent = isCurrent,
+                isOnline = isCurrent || device.isActive,
+                isActive = device.isActive,
+                accessRole = device.accessRole,
+            )
+        }
+    }
+
+    fun mapLocations(
+        locations: List<BackendLocation>,
+        language: AppLanguage,
+        clientLatencyByTarget: Map<String, Int>,
+    ): List<ServerLocation> {
+        return locations
+            .filter { it.countryCode.isNotBlank() }
+            .groupBy { it.countryCode.trim().uppercase(Locale.ROOT) }
+            .map { (countryCode, members) ->
+            val onlineMembers = members.filter { it.isOnline }
+            val selectableMembers = onlineMembers.ifEmpty { members }
+            val representative = selectableMembers.minByOrNull { it.loadPercent ?: Int.MAX_VALUE }
+                ?: members.first()
+            val localized = localizedLocation(representative, language)
+            val targetKey = clientLatencyTargetKey(countryCode, representative.entryHost)
+            val capacities = onlineMembers.mapNotNull { it.capacityMbps }
+            val downloads = onlineMembers.mapNotNull { it.downloadMbps }
+            val uploads = onlineMembers.mapNotNull { it.uploadMbps }
+            ServerLocation(
+                code = countryCode,
+                countryCode = countryCode,
+                country = localized.first,
+                city = "",
+                host = representative.entryHost,
+                capacityMbps = capacities.takeIf { it.isNotEmpty() }?.sum(),
+                downloadMbps = downloads.takeIf { it.isNotEmpty() }?.sum(),
+                uploadMbps = uploads.takeIf { it.isNotEmpty() }?.sum(),
+                latencyMs = targetKey?.let(clientLatencyByTarget::get),
+                loadPercent = onlineMembers.mapNotNull { it.loadPercent }.minOrNull(),
+                isOnline = onlineMembers.isNotEmpty(),
+            )
+        }.sortedBy { it.country.lowercase(Locale.ROOT) }
+    }
+
+    fun initialPlans(): List<PlanSummary> = emptyList()
+
+    fun mapPlans(
+        plans: List<BackendPlan>,
+        language: AppLanguage,
+    ): List<PlanSummary> {
+        return plans
+            .filter { it.isActive }
+            .sortedWith(compareBy<BackendPlan> { it.sortOrder }.thenBy { it.billingPeriodMonths })
+            .map { plan ->
+                PlanSummary(
+                    code = plan.code,
+                    tier = plan.tier,
+                    title = plan.tier.replaceFirstChar { char -> char.titlecase(Locale.ROOT) },
+                    devices = plan.deviceLimit,
+                    trafficLimitGb = plan.trafficLimitGb,
+                    trafficLabel = plan.trafficLimitGb?.let { TrafficFormat.gigabytes(it, language).label }
+                        ?: tr(language, "Безлимит", "Unlimited"),
+                    monthlyPriceRub = plan.priceRub,
+                    yearlyMonthlyPriceRub = if (plan.billingPeriodMonths >= 12) plan.monthlyEquivalentRub else null,
+                    badgeColor = plan.badgeColor,
+                    headline = plan.headline?.trim()?.takeIf { it.isNotBlank() },
+                    features = plan.features,
+                    isRecommended = plan.tier.equals("pro", ignoreCase = true),
+                )
+            }
+    }
+
+    private fun localizedLocation(
+        location: BackendLocation,
+        language: AppLanguage,
+    ): Pair<String, String> {
+        val normalizedCode = location.countryCode.lowercase(Locale.ROOT)
+        return when (normalizedCode) {
+            "lv" -> {
+                val localizedName = when (language) {
+                    AppLanguage.RU -> location.nameRu
+                    AppLanguage.EN -> location.nameEn
+                }?.trim().orEmpty()
+                val rawName = localizedName.ifBlank { location.name.trim() }
+                val isGenericLatvia = rawName.isBlank() ||
+                    rawName.equals("latvia", ignoreCase = true) ||
+                    rawName.equals("латвия", ignoreCase = true)
+                if (isGenericLatvia) {
+                    if (language == AppLanguage.RU) "Латвия" to "Рига" else "Latvia" to "Riga"
+                } else {
+                    rawName to location.entryHost
+                }
+            }
+            else -> {
+                val localizedName = when (language) {
+                    AppLanguage.RU -> location.nameRu
+                    AppLanguage.EN -> location.nameEn
+                }?.trim().orEmpty()
+                val country = localizedName.ifBlank {
+                    location.name.ifBlank { location.countryCode.uppercase(Locale.ROOT) }
+                }
+                country to location.entryHost
+            }
+        }
+    }
+
+    private fun fallbackDeviceName(
+        platform: String,
+        language: AppLanguage,
+    ): String {
+        return when (platform.lowercase(Locale.ROOT)) {
+            "android" -> if (language == AppLanguage.RU) "Android устройство" else "Android device"
+            "ios" -> "iPhone"
+            "windows" -> "Windows PC"
+            "macos" -> "Mac"
+            else -> if (language == AppLanguage.RU) "Устройство" else "Device"
+        }
+    }
+
+    private fun buildDeviceSubtitle(
+        device: BackendDevice,
+        language: AppLanguage,
+        isCurrent: Boolean,
+    ): String {
+        val platformLabel = when (device.platform.lowercase(Locale.ROOT)) {
+            "android" -> "Android"
+            "ios" -> "iOS"
+            "windows" -> "Windows"
+            "macos" -> "macOS"
+            else -> device.platform.replaceFirstChar {
+                if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString()
+            }
+        }
+        val statusLabel = when {
+            isCurrent -> tr(language, "В сети", "Online")
+            device.lastSeenAt != null -> tr(language, "Недавно", "Recently")
+            else -> tr(language, "Неактивно", "Inactive")
+        }
+        return "$platformLabel • $statusLabel"
+    }
+
+    private fun tr(
+        language: AppLanguage,
+        russian: String,
+        english: String,
+    ): String {
+        return if (language == AppLanguage.RU) russian else english
+    }
+}

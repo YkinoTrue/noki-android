@@ -1,0 +1,244 @@
+package com.noki.vpn
+
+import com.noki.vpn.data.AccentPalette
+import com.noki.vpn.data.AdvancedSettings
+import com.noki.vpn.data.AppFilterMode
+import com.noki.vpn.data.AppLanguage
+import com.noki.vpn.data.DefaultStoredSettingsFactory
+import com.noki.vpn.data.EndpointSelectionMode
+import com.noki.vpn.data.GlassMode
+import com.noki.vpn.data.HomeLayoutVariant
+import com.noki.vpn.data.InMemoryAtomicStoredSettingsStore
+import com.noki.vpn.data.SecuritySettings
+import com.noki.vpn.data.StoredSettings
+import com.noki.vpn.data.UserProfile
+import com.noki.vpn.data.VlessProfile
+import com.noki.vpn.data.VpnEndpointOption
+import com.noki.vpn.data.VpnProtocol
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class SettingsMutationCoordinatorTest {
+    @Test
+    fun profileChangingSettingsMutationsDeriveFromLatestProfile() {
+        val latest = authenticatedSettings().copy(
+            profile = VlessProfile(
+                endpointCode = "lv-endpoint",
+                transport = "tcp",
+                host = "latest.example",
+                uuid = "latest-runtime-uuid",
+                security = "reality",
+                serverName = "latest-sni",
+            ),
+            endpointOptions = listOf(VpnEndpointOption(code = "lv-endpoint", locationCode = "lv")),
+            backendAccessToken = "latest-access",
+            backendRefreshToken = "latest-refresh",
+            backendDeviceId = "latest-device",
+        )
+        val store = InMemoryAtomicStoredSettingsStore(latest)
+        val coordinator = SettingsMutationCoordinator(store)
+        val staleState = stateFrom(authenticatedSettings())
+
+        val protocolState = AdvancedSettingsStateReducer.changeProtocol(staleState, VpnProtocol.TLS)
+        val protocolSaved = coordinator.persistProtocolChange(protocolState, VpnProtocol.TLS)
+        assertEquals("", protocolSaved.profile.endpointCode)
+        assertEquals("", protocolSaved.profile.uuid)
+        assertOwnershipPreserved("protocol", latest, protocolSaved)
+
+        store.replace(latest)
+        val autoState = AdvancedSettingsStateReducer.setAutoEndpointSelection(staleState, true)
+        val autoSaved = coordinator.persistAutoEndpointSelection(autoState)
+        assertEquals("lv-endpoint", autoSaved.profile.endpointCode)
+        assertEquals("", autoSaved.profile.uuid)
+        assertEquals("latest-sni", autoSaved.profile.serverName)
+        assertOwnershipPreserved("auto endpoint", latest, autoSaved)
+
+        store.replace(latest)
+        val manualOption = VpnEndpointOption(
+            code = "de-manual",
+            locationCode = "de",
+            host = "manual.example",
+            port = 8443,
+            transport = "tcp",
+            security = "tls",
+        )
+        val manualState = AdvancedSettingsStateReducer.selectManualEndpoint(staleState, manualOption)
+        val manualSaved = coordinator.persistManualEndpointSelection(manualState, manualOption)
+        assertEquals("de-manual", manualSaved.profile.endpointCode)
+        assertEquals("manual.example", manualSaved.profile.host)
+        assertEquals("8443", manualSaved.profile.port)
+        assertEquals("", manualSaved.profile.uuid)
+        assertOwnershipPreserved("manual endpoint", latest, manualSaved)
+    }
+
+    @Test
+    fun serverSelectionDerivesRuntimeProfileFromLatestStoreAtomically() {
+        val latest = authenticatedSettings().copy(
+            profile = VlessProfile(endpointCode = "lv-endpoint", uuid = "latest-runtime-uuid"),
+            userProfile = UserProfile(selectedCountryCode = "LV", selectedServerCode = "lv-1"),
+            endpointOptions = listOf(VpnEndpointOption(code = "different-endpoint", locationCode = "lv")),
+            backendAccessToken = "latest-access",
+            backendRefreshToken = "latest-refresh",
+            backendDeviceId = "latest-device",
+        )
+        val store = InMemoryAtomicStoredSettingsStore(latest)
+        val coordinator = SettingsMutationCoordinator(store)
+
+        val saved = coordinator.persistServerSelection("de")
+
+        assertEquals("DE", saved.userProfile.selectedCountryCode)
+        assertEquals("", saved.userProfile.selectedServerCode)
+        assertEquals(emptyList<VpnEndpointOption>(), saved.endpointOptions)
+        assertEquals("", saved.profile.endpointCode)
+        assertEquals("", saved.profile.uuid)
+        assertEquals("latest-access", saved.backendAccessToken)
+        assertEquals("latest-refresh", saved.backendRefreshToken)
+        assertEquals("latest-device", saved.backendDeviceId)
+    }
+
+    @Test
+    fun serviceRotationThenLanguageMutationCannotRestoreOldTokens() {
+        val initial = authenticatedSettings()
+        val store = InMemoryAtomicStoredSettingsStore(initial)
+        val coordinator = SettingsMutationCoordinator(store)
+        store.updateSettings { latest ->
+            latest.copy(
+                backendAccessToken = "rotated-access",
+                backendRefreshToken = "rotated-refresh",
+                backendAccessTokenExpiresInSeconds = 3_600,
+                backendRefreshExpiresAt = "rotated-expiry",
+            )
+        }
+
+        coordinator.persistUiFields(
+            stateFrom(initial).copy(
+                personalizationSettings = initial.personalizationSettings.copy(language = AppLanguage.RU),
+            ),
+        )
+
+        val saved = store.load()
+        assertEquals(AppLanguage.RU, saved.personalizationSettings.language)
+        assertEquals("rotated-access", saved.backendAccessToken)
+        assertEquals("rotated-refresh", saved.backendRefreshToken)
+        assertEquals(3_600L, saved.backendAccessTokenExpiresInSeconds)
+        assertEquals("rotated-expiry", saved.backendRefreshExpiresAt)
+    }
+
+    @Test
+    fun everyUiSettingsMutationPreservesLatestProfileSessionDeviceAndAuthFields() {
+        val initial = authenticatedSettings()
+        val latest = initial.copy(
+            profile = VlessProfile(endpointCode = "service-profile", uuid = "service-uuid"),
+            userProfile = UserProfile(username = "latest-user", email = "latest@example.com"),
+            endpointOptions = listOf(VpnEndpointOption(code = "latest-endpoint")),
+            isAuthenticated = true,
+            backendAccessToken = "latest-access",
+            backendRefreshToken = "latest-refresh",
+            backendAccessTokenExpiresInSeconds = 7_200,
+            backendRefreshExpiresAt = "latest-expiry",
+            backendDeviceKey = "latest-device-key",
+            backendDeviceId = "latest-device-id",
+            backendDeviceAccessRole = "invited",
+        )
+        val store = InMemoryAtomicStoredSettingsStore(initial)
+        val coordinator = SettingsMutationCoordinator(store)
+        val base = stateFrom(initial)
+        val mutations = listOf(
+            "filter mode" to base.copy(filterMode = AppFilterMode.ONLY_SELECTED),
+            "selected packages" to base.copy(selectedPackages = setOf("com.example.app")),
+            "language" to base.copy(
+                personalizationSettings = base.personalizationSettings.copy(language = AppLanguage.RU),
+            ),
+            "accent" to base.copy(
+                personalizationSettings = base.personalizationSettings.copy(accentPalette = AccentPalette.CYAN),
+            ),
+            "home layout" to base.copy(
+                personalizationSettings = base.personalizationSettings.copy(homeLayoutVariant = HomeLayoutVariant.MAIN_V2),
+            ),
+            "simple mode" to base.copy(
+                personalizationSettings = base.personalizationSettings.copy(glassMode = GlassMode.SIMPLE),
+            ),
+            "security" to base.copy(
+                securitySettings = SecuritySettings(
+                    biometricEnabled = false,
+                    loginAlertsEnabled = false,
+                    protectNewDevices = false,
+                ),
+            ),
+            "advanced" to base.copy(
+                advancedSettings = AdvancedSettings(
+                    protocol = VpnProtocol.TLS,
+                    endpointSelectionMode = EndpointSelectionMode.MANUAL,
+                    manualEndpointCode = "manual-endpoint",
+                    manualEndpointGroupKey = "manual-group",
+                    connectionLogsEnabled = false,
+                    errorLogsEnabled = false,
+                    anonymousLogsEnabled = false,
+                    alwaysOnDomains = listOf("always.example"),
+                    bypassDomains = listOf("bypass.example"),
+                ),
+            ),
+        )
+
+        mutations.forEach { (name, state) ->
+            store.replace(latest)
+
+            val saved = coordinator.persistUiFields(state)
+
+            assertEquals("$name profile", latest.profile, saved.profile)
+            assertEquals("$name user profile", latest.userProfile, saved.userProfile)
+            assertEquals("$name endpoint options", latest.endpointOptions, saved.endpointOptions)
+            assertEquals("$name authenticated", latest.isAuthenticated, saved.isAuthenticated)
+            assertEquals("$name access token", latest.backendAccessToken, saved.backendAccessToken)
+            assertEquals("$name refresh token", latest.backendRefreshToken, saved.backendRefreshToken)
+            assertEquals("$name access expiry", latest.backendAccessTokenExpiresInSeconds, saved.backendAccessTokenExpiresInSeconds)
+            assertEquals("$name refresh expiry", latest.backendRefreshExpiresAt, saved.backendRefreshExpiresAt)
+            assertEquals("$name device key", latest.backendDeviceKey, saved.backendDeviceKey)
+            assertEquals("$name device id", latest.backendDeviceId, saved.backendDeviceId)
+            assertEquals("$name device role", latest.backendDeviceAccessRole, saved.backendDeviceAccessRole)
+            assertEquals("$name filter mode persisted", state.filterMode, saved.filterMode)
+            assertEquals("$name packages persisted", state.selectedPackages, saved.selectedPackages)
+            assertEquals("$name personalization persisted", state.personalizationSettings, saved.personalizationSettings)
+            assertEquals("$name security persisted", state.securitySettings, saved.securitySettings)
+            assertEquals("$name advanced persisted", state.advancedSettings, saved.advancedSettings)
+        }
+    }
+
+    private fun authenticatedSettings(): StoredSettings =
+        DefaultStoredSettingsFactory.create().copy(
+            profile = VlessProfile(endpointCode = "old-profile", uuid = "old-uuid"),
+            userProfile = UserProfile(username = "old-user", email = "old@example.com"),
+            endpointOptions = listOf(VpnEndpointOption(code = "old-endpoint")),
+            isAuthenticated = true,
+            backendAccessToken = "old-access",
+            backendRefreshToken = "old-refresh",
+            backendAccessTokenExpiresInSeconds = 60,
+            backendRefreshExpiresAt = "old-expiry",
+            backendDeviceKey = "old-device-key",
+            backendDeviceId = "old-device-id",
+            backendDeviceAccessRole = "owner",
+        )
+
+    private fun stateFrom(settings: StoredSettings): AppUiState =
+        AppUiState(
+            profile = settings.profile,
+            filterMode = settings.filterMode,
+            selectedPackages = settings.selectedPackages,
+            userProfile = settings.userProfile,
+            personalizationSettings = settings.personalizationSettings,
+            securitySettings = settings.securitySettings,
+            advancedSettings = settings.advancedSettings,
+            endpointOptions = settings.endpointOptions,
+            isAuthenticated = settings.isAuthenticated,
+        )
+
+    private fun assertOwnershipPreserved(
+        name: String,
+        expected: StoredSettings,
+        actual: StoredSettings,
+    ) {
+        assertEquals("$name access", expected.backendAccessToken, actual.backendAccessToken)
+        assertEquals("$name refresh", expected.backendRefreshToken, actual.backendRefreshToken)
+        assertEquals("$name device", expected.backendDeviceId, actual.backendDeviceId)
+    }
+}

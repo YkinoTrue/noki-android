@@ -1,0 +1,111 @@
+package com.noki.vpn.vpn
+
+import android.content.Context
+import android.net.TrafficStats
+import android.os.Process
+import android.os.SystemClock
+import com.noki.vpn.data.SettingsRepository
+import com.noki.vpn.data.StoredSettings
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
+import java.time.LocalDate
+
+internal class VpnStatsCoordinator(
+    context: Context,
+    private val scope: CoroutineScope,
+    scheduler: DelayedTaskScheduler,
+    private val measureConnectedLatencyMs: suspend () -> Int?,
+    private val onLatencySample: (locationCode: String, latencyMs: Int) -> Unit,
+) {
+    private val appContext = context.applicationContext
+    private var owner: RuntimeOwner? = null
+    private val tracker = VpnRuntimeStatsTracker(
+        currentDate = LocalDate::now,
+        elapsedRealtime = SystemClock::elapsedRealtime,
+        readTraffic = ::readRuntimeTrafficBytes,
+        latencyIntervalMillis = LATENCY_SAMPLE_INTERVAL_MS,
+        scheduler = scheduler,
+        flushIntervalMillis = STATS_FLUSH_INTERVAL_MS,
+        onScheduledFlush = { flush(finalFlush = false) },
+    )
+
+    fun start(repository: SettingsRepository, settings: StoredSettings, runtimeOwner: RuntimeOwner) {
+        owner = runtimeOwner
+        val date = tracker.start(runtimeOwner, settings.userProfile.selectedServerCode)
+        repository.recordDailyStatsSessionStart(date)
+    }
+
+    fun acceptsStop(runtimeOwner: RuntimeOwner?): Boolean = runtimeOwner == null || owner == runtimeOwner
+
+    fun stop(runtimeOwner: RuntimeOwner?) {
+        if (!acceptsStop(runtimeOwner)) return
+        flush(finalFlush = true)
+        reset()
+    }
+
+    fun reset() {
+        tracker.stopScheduling()
+        owner?.let(tracker::clear)
+        owner = null
+    }
+
+    fun recordInitialLatency(
+        repository: SettingsRepository,
+        settings: StoredSettings,
+        runtimeOwner: RuntimeOwner,
+        initialLatencyMs: Long?,
+    ) {
+        val date = LocalDate.now().toString()
+        val locationCode = settings.userProfile.selectedServerCode
+        if (initialLatencyMs != null && locationCode.isNotBlank()) {
+            val latencyMs = initialLatencyMs.coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
+            tracker.markLatencySample(runtimeOwner)
+            repository.addDailyStatsPingSample(date, latencyMs)
+            onLatencySample(locationCode, latencyMs)
+        } else {
+            tracker.markLatencySample(runtimeOwner)
+            recordImmediateLatency(repository, LatencySampleRequest(runtimeOwner, date, locationCode))
+        }
+    }
+
+    fun flush(finalFlush: Boolean) {
+        val runtimeOwner = owner ?: return
+        val result = tracker.flush(runtimeOwner, finalFlush) ?: return
+        val repository = SettingsRepository(appContext)
+        repository.addDailyStatsDelta(
+            date = result.delta.date,
+            rxBytes = result.delta.rxBytes,
+            txBytes = result.delta.txBytes,
+            onlineSeconds = result.delta.onlineSeconds,
+        )
+        result.latencyRequest?.let { recordImmediateLatency(repository, it) }
+    }
+
+    private fun recordImmediateLatency(repository: SettingsRepository, request: LatencySampleRequest) {
+        if (request.locationCode.isBlank()) return
+        scope.launch {
+            if (!tracker.accepts(request)) return@launch
+            measureConnectedLatencyMs()?.let { latencyMs ->
+                if (!tracker.accepts(request)) return@let
+                tracker.markLatencySample(request.owner)
+                repository.addDailyStatsPingSample(request.date, latencyMs)
+                onLatencySample(request.locationCode, latencyMs)
+            }
+        }
+    }
+
+    private fun readRuntimeTrafficBytes(): TrafficBytes? {
+        val uid = Process.myUid()
+        val rxBytes = TrafficStats.getUidRxBytes(uid)
+        val txBytes = TrafficStats.getUidTxBytes(uid)
+        if (rxBytes == TrafficStats.UNSUPPORTED.toLong() || txBytes == TrafficStats.UNSUPPORTED.toLong()) {
+            return null
+        }
+        return TrafficBytes(rxBytes, txBytes)
+    }
+
+    companion object {
+        private const val STATS_FLUSH_INTERVAL_MS = 60_000L
+        private const val LATENCY_SAMPLE_INTERVAL_MS = 5 * 60_000L
+    }
+}

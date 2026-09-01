@@ -1,0 +1,36 @@
+# Developer-local configuration and credentials
+local.properties
+app/google-services.json
+sha-256 key/
+.env
+.env.*
+*.key
+*.jks
+*.keystore
+*.p12
+*.pem
+
+# IDE and build state
+.idea/
+.vscode/
+.gradle/
+.kotlin/
+**/build/
+**/build-compose-*/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Generated packages, diagnostics and local archives
+*.apk
+*.aab
+*.ap_
+*.idsig
+*.log
+*.hprof
+*.db
+*.sqlite*
+*.zip
+*.tar
+*.gz
+*.bak
