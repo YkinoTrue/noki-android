@@ -52,6 +52,9 @@ private fun Int.toStableDensityDp(currentDensityDpi: Int): Int {
         .roundToInt()
 }
 
+internal fun shouldFilterTouchesWhenObscured(apiLevel: Int): Boolean =
+    apiLevel <= Build.VERSION_CODES.R
+
 class MainActivity : ComponentActivity() {
     private val viewModel by viewModels<MainViewModel>()
     private val credentialManager by lazy { CredentialManager.create(this) }
@@ -143,6 +146,9 @@ class MainActivity : ComponentActivity() {
     @Suppress("DEPRECATION")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (shouldFilterTouchesWhenObscured(Build.VERSION.SDK_INT)) {
+            window.decorView.rootView.filterTouchesWhenObscured = true
+        }
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = Color.TRANSPARENT
         window.navigationBarColor = Color.TRANSPARENT
