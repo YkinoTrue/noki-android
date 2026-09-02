@@ -387,6 +387,24 @@ class BackendApiClient(
         executeArray(request).toDeviceList()
     }
 
+    override suspend fun renameDevice(
+        token: String,
+        deviceId: String,
+        name: String,
+        currentDeviceId: String?,
+        currentDeviceKey: String?,
+    ): List<BackendDevice> = withContext(Dispatchers.IO) {
+        val encodedDeviceId = java.net.URLEncoder.encode(deviceId, Charsets.UTF_8.name())
+        val payload = JSONObject().put("name", name)
+        val request = Request.Builder()
+            .url("$baseUrl$API_PREFIX/devices/$encodedDeviceId")
+            .header("Authorization", "Bearer $token")
+            .currentDeviceHeaders(currentDeviceId, currentDeviceKey)
+            .patch(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        executeArray(request).toDeviceList()
+    }
+
     override suspend fun setDeviceFullAccess(
         token: String,
         deviceId: String,

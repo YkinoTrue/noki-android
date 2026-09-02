@@ -118,7 +118,8 @@ object BootstrapStateMapper {
             val isCurrent = device.id == currentDeviceId || device.deviceKey == currentDeviceKey
             DeviceSession(
                 id = device.id,
-                title = device.deviceName.ifBlank { fallbackDeviceName(device.platform, language) },
+                title = device.customName?.trim()?.takeIf(String::isNotBlank)
+                    ?: device.deviceName.ifBlank { fallbackDeviceName(device.platform, language) },
                 subtitle = buildDeviceSubtitle(device, language, isCurrent),
                 isCurrent = isCurrent,
                 isOnline = isCurrent || device.isActive,
@@ -256,7 +257,9 @@ object BootstrapStateMapper {
             device.lastSeenAt != null -> tr(language, "Недавно", "Recently")
             else -> tr(language, "Неактивно", "Inactive")
         }
-        return "$platformLabel • $statusLabel"
+        val modelLabel = device.deviceName.trim()
+            .takeIf { device.customName?.isNotBlank() == true && it.isNotBlank() }
+        return listOfNotNull(modelLabel, platformLabel, statusLabel).joinToString(" • ")
     }
 
     private fun tr(

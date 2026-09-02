@@ -175,34 +175,36 @@ internal fun AppUiRuntime.requestRenameDevice(deviceId: String) {
     uiState = uiState.copy(dialog = AppDialog.RenameDevice(deviceId))
 }
 
-internal fun AppUiRuntime.renameDeviceLocally(deviceId: String, value: String) {
-    val name = DeviceLocalNamePolicy.normalize(value)
+internal fun AppUiRuntime.renameDevice(deviceId: String, value: String) {
+    val name = value.trim().replace(Regex("\\s+"), " ").take(80)
     if (name.isBlank()) return
-    val stableKey = syncedDevices.firstOrNull { it.id == deviceId }
-        ?.deviceKey
-        ?.takeIf(String::isNotBlank)
-        ?: deviceId
-    repository.saveLocalDeviceName(stableKey, name)
-    uiState = uiState.copy(
-        devices = DeviceLocalNamePolicy.apply(uiState.devices, mapOf(deviceId to name)),
-        dialog = null,
-        inlineMessage = tr(
-            uiState.personalizationSettings.language,
-            "Имя устройства сохранено на этом устройстве",
-            "Device name saved on this device",
-        ),
+    val language = uiState.personalizationSettings.language
+    launchAuthenticatedDeviceOperation(
+        replaceActive = true,
+        allowsReplacement = false,
+        onStarted = { uiState = uiState.copy(inlineMessage = null) },
+        operation = { attempt ->
+            deviceActionCoordinator(attempt).renameDevice(
+                context = deviceActionContext(attempt.accessToken),
+                deviceId = deviceId,
+                name = name,
+            )
+        },
+        onSuccess = { result ->
+            uiState = uiState.copy(dialog = null)
+            applyDeviceListActionResult(
+                result = result,
+                language = language,
+                successMessage = tr(language, "Имя устройства сохранено", "Device name saved"),
+            )
+        },
+        onFailure = { error ->
+            uiState = uiState.copy(
+                inlineMessage = AppErrorMapper.readableNetworkError(language, error),
+            )
+        },
     )
 }
-
-internal fun AppUiRuntime.localDeviceSessions(devices: List<com.noki.vpn.data.DeviceSession>) =
-    DeviceLocalNamePolicy.apply(
-        devices,
-        DeviceLocalNamePolicy.aliasesByDeviceId(
-            devices = devices,
-            backendDevices = syncedDevices,
-            storedNames = repository.loadLocalDeviceNames(),
-        ),
-    )
 
 internal fun AppUiRuntime.refreshIncyDevices() {
     if (!uiState.isAuthenticated || uiState.incyDevices.isLoading) return
@@ -567,13 +569,11 @@ internal fun AppUiRuntime.applyDeviceListActionResult(
         is DeviceActionCoordinator.ActionResult.Success -> {
             syncedDevices = result.value
             uiState = uiState.copy(
-                devices = localDeviceSessions(
-                    BootstrapStateMapper.mapDevices(
-                        result.value,
-                        language,
-                        backendDeviceId,
-                        backendDeviceKey,
-                    ),
+                devices = BootstrapStateMapper.mapDevices(
+                    result.value,
+                    language,
+                    backendDeviceId,
+                    backendDeviceKey,
                 ),
                 inlineMessage = successMessage,
             )

@@ -2,11 +2,24 @@ package com.noki.vpn.data
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 
 class DeviceActionCoordinatorTest {
+    @Test
+    fun renameDeviceUsesAccountApiAndReturnsRefreshedDevices() = runBlocking {
+        val api = RecordingRenameDeviceActionApi()
+        val coordinator = DeviceActionCoordinator(api)
+
+        val result = coordinator.renameDevice(deviceContext(), "device-2", "Рабочий телефон")
+
+        assertTrue(result is DeviceActionCoordinator.ActionResult.Success)
+        assertEquals("device-2", api.deviceId)
+        assertEquals("Рабочий телефон", api.name)
+    }
+
     @Test
     fun missingRefreshContextDoesNotRequestLogout() = runBlocking {
         val coordinator = DeviceActionCoordinator(
@@ -133,6 +146,14 @@ class DeviceActionCoordinatorTest {
             currentDeviceKey: String?,
         ): List<BackendDevice> = throw CancellationException("cancelled")
 
+        override suspend fun renameDevice(
+            token: String,
+            deviceId: String,
+            name: String,
+            currentDeviceId: String?,
+            currentDeviceKey: String?,
+        ): List<BackendDevice> = throw CancellationException("cancelled")
+
         override suspend fun setDeviceFullAccess(
             token: String,
             deviceId: String,
@@ -174,5 +195,22 @@ class DeviceActionCoordinatorTest {
             currentDeviceId: String?,
             currentDeviceKey: String?,
         ): Unit = throw IOException("offline")
+    }
+
+    private class RecordingRenameDeviceActionApi : CancellingDeviceActionApi() {
+        var deviceId: String? = null
+        var name: String? = null
+
+        override suspend fun renameDevice(
+            token: String,
+            deviceId: String,
+            name: String,
+            currentDeviceId: String?,
+            currentDeviceKey: String?,
+        ): List<BackendDevice> {
+            this.deviceId = deviceId
+            this.name = name
+            return emptyList()
+        }
     }
 }

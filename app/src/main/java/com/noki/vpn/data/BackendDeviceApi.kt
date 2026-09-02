@@ -20,6 +20,14 @@ interface DeviceActionApi {
         currentDeviceKey: String?,
     ): List<BackendDevice>
 
+    suspend fun renameDevice(
+        token: String,
+        deviceId: String,
+        name: String,
+        currentDeviceId: String?,
+        currentDeviceKey: String?,
+    ): List<BackendDevice>
+
     suspend fun setDeviceFullAccess(
         token: String,
         deviceId: String,

@@ -39,6 +39,7 @@ internal fun JSONObject.toBackendDevice(): BackendDevice =
         id = getString("id"),
         deviceKey = getString("device_key"),
         deviceName = getString("device_name"),
+        customName = optBackendString("custom_name"),
         platform = getString("platform"),
         accessRole = optString("access_role", "owner"),
         isActive = optBoolean("is_active", true),

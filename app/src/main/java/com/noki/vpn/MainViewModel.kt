@@ -268,7 +268,7 @@ class MainViewModel(
 
     fun requestRenameDevice(deviceId: String) = runtime.requestRenameDevice(deviceId)
 
-    fun renameDeviceLocally(deviceId: String, name: String) = runtime.renameDeviceLocally(deviceId, name)
+    fun renameDevice(deviceId: String, name: String) = runtime.renameDevice(deviceId, name)
 
     fun setDeviceFullAccess(deviceId: String, fullAccess: Boolean) = runtime.setDeviceFullAccess(deviceId, fullAccess)
 

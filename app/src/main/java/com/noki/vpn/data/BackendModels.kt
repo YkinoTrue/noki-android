@@ -58,6 +58,7 @@ data class BackendDevice(
     val id: String,
     val deviceKey: String,
     val deviceName: String,
+    val customName: String? = null,
     val platform: String,
     val accessRole: String,
     val isActive: Boolean,

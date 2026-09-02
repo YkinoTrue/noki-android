@@ -251,7 +251,7 @@ fun DevicesScreen(
                     liveGlassEnabled = liveGlassEnabled,
                     maxLength = 80,
                     onDismiss = viewModel::dismissDialog,
-                    onConfirm = { viewModel.renameDeviceLocally(dialog.deviceId, name) },
+                    onConfirm = { viewModel.renameDevice(dialog.deviceId, name) },
                 )
             }
 

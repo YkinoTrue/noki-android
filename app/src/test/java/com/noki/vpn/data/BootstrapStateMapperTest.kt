@@ -12,6 +12,30 @@ import org.junit.Test
 
 class BootstrapStateMapperTest {
     @Test
+    fun `account device custom name is title and model stays in subtitle`() {
+        val device = BackendDevice(
+            id = "device-1",
+            deviceKey = "stable-key",
+            deviceName = "Samsung SM-G996B",
+            customName = "Рабочий телефон",
+            platform = "android",
+            accessRole = "owner",
+            isActive = true,
+            lastSeenAt = null,
+        )
+
+        val row = BootstrapStateMapper.mapDevices(
+            devices = listOf(device),
+            language = AppLanguage.RU,
+            currentDeviceId = "device-1",
+            currentDeviceKey = "stable-key",
+        ).single()
+
+        assertEquals("Рабочий телефон", row.title)
+        assertTrue(row.subtitle.startsWith("Samsung SM-G996B • "))
+    }
+
+    @Test
     fun `traffic labels use binary terabytes and keep smaller limits precise`() {
         for ((gb, ru, en) in listOf(
             Triple(0.5, "0,5 ГБ", "0.5 GB"),

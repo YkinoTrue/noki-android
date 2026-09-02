@@ -52,6 +52,22 @@ class DeviceActionCoordinator(
         }
     }
 
+    suspend fun renameDevice(
+        context: DeviceContext,
+        deviceId: String,
+        name: String,
+    ): ActionResult<List<BackendDevice>> {
+        return handleUnauthorized(context) { activeContext ->
+            api.renameDevice(
+                token = activeContext.token,
+                deviceId = deviceId,
+                name = name,
+                currentDeviceId = activeContext.currentDeviceId,
+                currentDeviceKey = activeContext.currentDeviceKey,
+            )
+        }
+    }
+
     suspend fun setFullAccess(
         context: DeviceContext,
         deviceId: String,
