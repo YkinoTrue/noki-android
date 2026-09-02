@@ -45,6 +45,10 @@ class IncyDeviceWorkflowTest {
 
         assertEquals("Планшет", gateway.lastName)
         assertTrue(result.importLink.value.startsWith("incy://crypt1/"))
+        assertEquals(
+            "https://api.noki.ykino.tech/v1/v2rayn/subscriptions/test-token",
+            result.v2raynSubscriptionUrl?.value,
+        )
     }
 
     private class FakeGateway : IncyDeviceGateway {
@@ -55,6 +59,7 @@ class IncyDeviceWorkflowTest {
             return BackendIncyDeviceCreate(
                 device = BackendIncyDevice(id = "d1", name = name),
                 importLink = "incy://crypt1/AAECAwQFBgcICQoLNyIQL3rDwRZqnyoD8pGKSLXP6o8NdSXQVSSALNbbUyIr__tWGFUexdIfKvvmDnuDGbmBvuppfNef6aKNZUwOm4c-Sg",
+                v2raynSubscriptionUrl = "https://api.noki.ykino.tech/v1/v2rayn/subscriptions/test-token",
             )
         }
     }

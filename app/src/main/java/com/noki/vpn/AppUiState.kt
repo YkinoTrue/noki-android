@@ -4,6 +4,7 @@ import androidx.compose.runtime.Immutable
 import com.noki.vpn.data.BackendIncyDevice
 import com.noki.vpn.data.BackendAppNotification
 import com.noki.vpn.data.IncyImportLink
+import com.noki.vpn.data.V2raynSubscriptionUrl
 import com.noki.vpn.data.AdvancedSettings
 import com.noki.vpn.data.AppLanguage
 import com.noki.vpn.data.AppFilterMode
@@ -107,6 +108,7 @@ data class IncyDevicesUiState(
     val nameInput: String = "",
     val selectedDeviceId: String? = null,
     val importLink: IncyImportLink? = null,
+    val v2raynSubscriptionUrl: V2raynSubscriptionUrl? = null,
     val isCreateDialogVisible: Boolean = false,
     val isManageDialogVisible: Boolean = false,
     val isLoading: Boolean = false,

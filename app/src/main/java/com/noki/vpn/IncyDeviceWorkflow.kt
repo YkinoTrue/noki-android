@@ -2,6 +2,7 @@ package com.noki.vpn
 
 import com.noki.vpn.data.BackendIncyDeviceCreate
 import com.noki.vpn.data.IncyImportLink
+import com.noki.vpn.data.V2raynSubscriptionUrl
 
 interface IncyDeviceGateway {
     suspend fun create(name: String): BackendIncyDeviceCreate
@@ -10,6 +11,7 @@ interface IncyDeviceGateway {
 data class IncyDeviceCreateResult(
     val device: com.noki.vpn.data.BackendIncyDevice,
     val importLink: IncyImportLink,
+    val v2raynSubscriptionUrl: V2raynSubscriptionUrl? = null,
 )
 
 class IncyDeviceWorkflow(
@@ -22,6 +24,7 @@ class IncyDeviceWorkflow(
         return IncyDeviceCreateResult(
             device = response.device,
             importLink = IncyImportLink.parse(response.importLink),
+            v2raynSubscriptionUrl = response.v2raynSubscriptionUrl?.let(V2raynSubscriptionUrl::parse),
         )
     }
 }

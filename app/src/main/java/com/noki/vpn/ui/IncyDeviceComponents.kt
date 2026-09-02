@@ -12,6 +12,7 @@ import android.os.PersistableBundle
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,10 +24,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -204,6 +209,13 @@ internal fun IncyDeviceDialogs(
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
+    var selectedLinkIndex by remember(state.selectedDeviceId, state.v2raynSubscriptionUrl) {
+        mutableIntStateOf(0)
+    }
+    val activeConnectionLink = when (selectedLinkIndex) {
+        1 -> state.v2raynSubscriptionUrl?.value
+        else -> state.importLink?.value
+    }
     if (state.isCreateDialogVisible) {
         IncyDeviceDialogSurface(
             title = tr(language, "Новое устройство INCY", "New INCY device"),
@@ -260,6 +272,30 @@ internal fun IncyDeviceDialogs(
                 backgroundColor = DevicesBgSoft,
                 enabled = !state.isLoading,
             )
+            if (state.v2raynSubscriptionUrl != null) {
+                GlassSegmentedControl(
+                    labels = listOf("INCY", "v2rayN"),
+                    selectedIndex = selectedLinkIndex,
+                    onSelectedIndexChanged = { selectedLinkIndex = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !state.isLoading,
+                    containerHeight = devicesDp(42f, scale),
+                    capsulePadding = devicesDp(4f, scale),
+                    liveGlassEnabled = liveGlassEnabled,
+                    depthEffectEnabled = false,
+                )
+            }
+            activeConnectionLink?.let { link ->
+                ConnectionQrBlock(
+                    link = link,
+                    label = if (selectedLinkIndex == 1) {
+                        tr(language, "Ссылка подписки v2rayN", "v2rayN subscription link")
+                    } else {
+                        tr(language, "Ссылка подключения INCY", "INCY connection link")
+                    },
+                    scale = scale,
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(devicesDp(10f, scale)),
@@ -276,9 +312,9 @@ internal fun IncyDeviceDialogs(
                     text = tr(language, "Копировать", "Copy"),
                     scale = scale,
                     isPrimary = false,
-                    enabled = state.importLink != null && !state.isLoading,
+                    enabled = activeConnectionLink != null && !state.isLoading,
                     modifier = Modifier.weight(1f),
-                    onClick = { state.importLink?.let { copyIncy(context, it.value) } },
+                    onClick = { activeConnectionLink?.let { copyIncy(context, it) } },
                 )
             }
             Row(
@@ -304,6 +340,39 @@ internal fun IncyDeviceDialogs(
             }
             IncyDialogError(state.error, scale)
         }
+    }
+}
+
+@Composable
+private fun ConnectionQrBlock(
+    link: String,
+    label: String,
+    scale: Float,
+) {
+    val bitmap = remember(link) { qrPayloadBitmap(link, 512) }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(devicesDp(8f, scale)),
+    ) {
+        Image(
+            bitmap = bitmap,
+            contentDescription = label,
+            modifier = Modifier
+                .size(devicesDp(176f, scale))
+                .background(Color.White)
+                .padding(devicesDp(8f, scale)),
+        )
+        DevicesText(
+            text = label,
+            fontSize = 11f,
+            lineHeight = 14f,
+            color = DevicesTextSecondary,
+            scale = scale,
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+        )
     }
 }
 

@@ -17,13 +17,18 @@ fun inviteQrPayload(inviteCode: String): String = InviteQrPrefix + inviteCode.tr
 fun inviteCodeQrBitmap(
     inviteCode: String,
     sizePx: Int,
+): ImageBitmap = qrPayloadBitmap(inviteQrPayload(inviteCode), sizePx)
+
+fun qrPayloadBitmap(
+    payload: String,
+    sizePx: Int,
 ): ImageBitmap {
     val hints = mapOf(
         EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
         EncodeHintType.MARGIN to 1,
     )
     val matrix = QRCodeWriter().encode(
-        inviteQrPayload(inviteCode),
+        payload,
         BarcodeFormat.QR_CODE,
         sizePx,
         sizePx,

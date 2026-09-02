@@ -219,7 +219,7 @@ class BackendApiClient(
             plans = json.optJSONArray("plans").toPlanList(),
             locations = json.optJSONArray("locations").toLocationList(),
             devices = json.getJSONArray("devices").toDeviceList(),
-            robokassaReady = json.optBoolean("robokassa_ready", false),
+            paymentsReady = json.optBoolean("payments_ready", false),
         )
     }
 
@@ -437,12 +437,13 @@ class BackendApiClient(
         return BackendIncyDeviceCreate(
             device = response.toBackendIncyDevice(),
             importLink = response.getString("import_link"),
+            v2raynSubscriptionUrl = response.optionalString("v2rayn_subscription_url"),
         )
     }
 
-    suspend fun getIncyImportLink(token: String, deviceId: String): IncyImportLink {
+    suspend fun getIncyImportLink(token: String, deviceId: String): IncyConnectionLinks {
         val id = java.net.URLEncoder.encode(deviceId, Charsets.UTF_8.name())
-        return IncyImportLink.parse(jsonApi.get("/incy/devices/$id/import-link", token).getString("import_link"))
+        return jsonApi.get("/incy/devices/$id/import-link", token).toIncyConnectionLinks()
     }
 
     suspend fun renameIncyDevice(token: String, deviceId: String, name: String): BackendIncyDevice {
@@ -456,10 +457,10 @@ class BackendApiClient(
         ).toBackendIncyDevice()
     }
 
-    suspend fun reissueIncyDevice(token: String, deviceId: String): IncyImportLink {
+    suspend fun reissueIncyDevice(token: String, deviceId: String): IncyConnectionLinks {
         val id = java.net.URLEncoder.encode(deviceId, Charsets.UTF_8.name())
         val response = postJson("/incy/devices/$id/reissue", JSONObject(), token)
-        return IncyImportLink.parse(response.getString("import_link"))
+        return response.toIncyConnectionLinks()
     }
 
     suspend fun deleteIncyDevice(token: String, deviceId: String) = withContext(Dispatchers.IO) {
@@ -590,3 +591,11 @@ class BackendApiClient(
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }
+
+private fun JSONObject.optionalString(key: String): String? =
+    if (has(key) && !isNull(key)) getString(key).takeIf(String::isNotBlank) else null
+
+private fun JSONObject.toIncyConnectionLinks(): IncyConnectionLinks = IncyConnectionLinks(
+    importLink = IncyImportLink.parse(getString("import_link")),
+    v2raynSubscriptionUrl = optionalString("v2rayn_subscription_url")?.let(V2raynSubscriptionUrl::parse),
+)

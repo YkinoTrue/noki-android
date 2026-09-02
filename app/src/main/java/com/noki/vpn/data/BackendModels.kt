@@ -86,6 +86,7 @@ data class BackendIncyDevice(
 data class BackendIncyDeviceCreate(
     val device: BackendIncyDevice,
     val importLink: String,
+    val v2raynSubscriptionUrl: String? = null,
 )
 
 @JvmInline
@@ -107,6 +108,32 @@ value class IncyImportLink private constructor(val value: String) {
         }
     }
 }
+
+@JvmInline
+value class V2raynSubscriptionUrl private constructor(val value: String) {
+    companion object {
+        private const val MAX_LENGTH = 8_192
+
+        fun parse(raw: String): V2raynSubscriptionUrl {
+            val value = raw.trim()
+            require(value.length in 1..MAX_LENGTH) { "invalid_v2rayn_subscription_url" }
+            val uri = java.net.URI(value)
+            require(
+                uri.scheme == "https" &&
+                    !uri.host.isNullOrBlank() &&
+                    uri.userInfo == null &&
+                    uri.fragment == null &&
+                    uri.path.contains("/v2rayn/subscriptions/")
+            ) { "invalid_v2rayn_subscription_url" }
+            return V2raynSubscriptionUrl(value)
+        }
+    }
+}
+
+data class IncyConnectionLinks(
+    val importLink: IncyImportLink,
+    val v2raynSubscriptionUrl: V2raynSubscriptionUrl? = null,
+)
 
 data class BackendDeviceInvite(
     val inviteCode: String,
@@ -261,5 +288,5 @@ data class BootstrapPayload(
     val plans: List<BackendPlan>,
     val locations: List<BackendLocation>,
     val devices: List<BackendDevice>,
-    val robokassaReady: Boolean,
+    val paymentsReady: Boolean,
 )

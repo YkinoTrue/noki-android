@@ -207,6 +207,7 @@ internal fun AppUiRuntime.showCreateIncyDevice() {
         incyDevices = uiState.incyDevices.copy(
             nameInput = "",
             importLink = null,
+            v2raynSubscriptionUrl = null,
             isCreateDialogVisible = true,
             isManageDialogVisible = false,
             error = null,
@@ -244,6 +245,7 @@ internal fun AppUiRuntime.createIncyDevice() {
                     nameInput = result.device.name,
                     selectedDeviceId = result.device.id,
                     importLink = result.importLink,
+                    v2raynSubscriptionUrl = result.v2raynSubscriptionUrl,
                     isCreateDialogVisible = false,
                     isManageDialogVisible = true,
                     isLoading = false,
@@ -266,6 +268,7 @@ internal fun AppUiRuntime.openIncyDevice(deviceId: String) {
                     selectedDeviceId = deviceId,
                     nameInput = device.name,
                     importLink = null,
+                    v2raynSubscriptionUrl = null,
                     isManageDialogVisible = true,
                     isCreateDialogVisible = false,
                     isLoading = true,
@@ -276,8 +279,14 @@ internal fun AppUiRuntime.openIncyDevice(deviceId: String) {
         operation = { attempt ->
             authSessionCoordinator.run(attempt) { token -> backendApi.getIncyImportLink(token, deviceId) }
         },
-        onSuccess = { link ->
-            uiState = uiState.copy(incyDevices = uiState.incyDevices.copy(importLink = link, isLoading = false))
+        onSuccess = { links ->
+            uiState = uiState.copy(
+                incyDevices = uiState.incyDevices.copy(
+                    importLink = links.importLink,
+                    v2raynSubscriptionUrl = links.v2raynSubscriptionUrl,
+                    isLoading = false,
+                ),
+            )
         },
         onFailure = ::handleIncyDeviceFailure,
     )
@@ -326,11 +335,12 @@ internal fun AppUiRuntime.reissueIncyDevice() {
                 backendApi.reissueIncyDevice(token, deviceId) to backendApi.listIncyDevices(token)
             }
         },
-        onSuccess = { (importLink, devices) ->
+        onSuccess = { (links, devices) ->
             uiState = uiState.copy(
                 incyDevices = uiState.incyDevices.copy(
                     devices = devices,
-                    importLink = importLink,
+                    importLink = links.importLink,
+                    v2raynSubscriptionUrl = links.v2raynSubscriptionUrl,
                     isLoading = false,
                 ),
             )
@@ -358,6 +368,7 @@ internal fun AppUiRuntime.deleteIncyDevice() {
                     devices = uiState.incyDevices.devices.filterNot { it.id == deviceId },
                     selectedDeviceId = null,
                     importLink = null,
+                    v2raynSubscriptionUrl = null,
                     isManageDialogVisible = false,
                     isLoading = false,
                 ),
@@ -375,6 +386,7 @@ internal fun AppUiRuntime.dismissIncyDeviceDialog() {
             isManageDialogVisible = false,
             selectedDeviceId = null,
             importLink = null,
+            v2raynSubscriptionUrl = null,
             isLoading = false,
             error = null,
         ),
