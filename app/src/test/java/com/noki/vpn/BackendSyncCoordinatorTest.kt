@@ -92,7 +92,7 @@ class BackendSyncCoordinatorTest {
     private fun payload(devices: List<BackendDevice>) = BootstrapPayload(
         user = BackendUser("user-1", "user", "user@example.com", null, true, false),
         subscription = BackendSubscription("active", "free", null, 1.0, 5.0),
-        plans = emptyList(), locations = emptyList(), devices = devices, robokassaReady = false,
+        plans = emptyList(), locations = emptyList(), devices = devices, paymentsReady = false,
     )
 
     @Test
@@ -116,7 +116,7 @@ class BackendSyncCoordinatorTest {
             plans = emptyList(),
             locations = emptyList(),
             devices = listOf(device("device-1", "device-key-1")),
-            robokassaReady = false,
+            paymentsReady = false,
         )
         val update = AndroidUpdateUiState(currentVersionName = "0.9.77")
         val coordinator = BackendSyncCoordinator(

@@ -101,6 +101,7 @@ sealed interface AppDialog {
         val error: String? = null,
     ) : AppDialog
     data class RemoveDevice(val deviceId: String) : AppDialog
+    data class RenameDevice(val deviceId: String) : AppDialog
 }
 
 data class IncyDevicesUiState(

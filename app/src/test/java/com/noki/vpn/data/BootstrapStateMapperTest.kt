@@ -92,7 +92,7 @@ class BootstrapStateMapperTest {
                     "plan_badge_color":"#12AABB", "traffic_used_gb":25,
                     "traffic_limit_gb":800, "expires_at":"2027-08-30T00:00:00Z"
                 }""").toBackendSubscription(),
-                plans = plans, locations = emptyList(), devices = emptyList(), robokassaReady = false,
+                plans = plans, locations = emptyList(), devices = emptyList(), paymentsReady = false,
             ),
             language = AppLanguage.RU, currentUserProfile = UserProfile(),
             currentProfile = VlessProfile(), advancedSettings = AdvancedSettings(),

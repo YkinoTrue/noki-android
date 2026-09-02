@@ -197,6 +197,7 @@ internal fun DeleteDeviceDialog(
     liveGlassEnabled: Boolean,
     onDismiss: () -> Unit,
     onFullAccessChanged: (String, Boolean) -> Unit,
+    onRename: () -> Unit,
     onConfirm: () -> Unit,
 ) {
     val density = LocalDensity.current
@@ -227,7 +228,7 @@ internal fun DeleteDeviceDialog(
                 .padding(start = 21.dp, end = 21.dp, bottom = bottomPadding)
                 .fillMaxWidth()
                 .widthIn(max = 370.dp)
-                .height(devicesDp(282f, scale))
+                .height(devicesDp(338f, scale))
                 .clip(shape)
                 .then(
                     if (liveGlassEnabled && backdrop != null) {
@@ -319,8 +320,18 @@ internal fun DeleteDeviceDialog(
                 liveGlassEnabled = liveGlassEnabled,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .offset(y = devicesDp(207f, scale)),
+                    .offset(y = devicesDp(263f, scale)),
                 onClick = onConfirm,
+            )
+            DevicesDialogButton(
+                text = tr(language, "Переименовать", "Rename"),
+                scale = scale,
+                isPrimary = false,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .offset(y = devicesDp(207f, scale))
+                    .width(devicesDp(220f, scale)),
+                onClick = onRename,
             )
             FullAccessOptionRow(
                 checked = fullAccessChecked,

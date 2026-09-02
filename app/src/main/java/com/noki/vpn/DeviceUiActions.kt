@@ -171,6 +171,28 @@ internal fun AppUiRuntime.requestRemoveDevice(deviceId: String) {
     uiState = uiState.copy(dialog = AppDialog.RemoveDevice(deviceId))
 }
 
+internal fun AppUiRuntime.requestRenameDevice(deviceId: String) {
+    uiState = uiState.copy(dialog = AppDialog.RenameDevice(deviceId))
+}
+
+internal fun AppUiRuntime.renameDeviceLocally(deviceId: String, value: String) {
+    val name = DeviceLocalNamePolicy.normalize(value)
+    if (name.isBlank()) return
+    repository.saveLocalDeviceName(deviceId, name)
+    uiState = uiState.copy(
+        devices = DeviceLocalNamePolicy.apply(uiState.devices, mapOf(deviceId to name)),
+        dialog = null,
+        inlineMessage = tr(
+            uiState.personalizationSettings.language,
+            "Имя устройства сохранено на этом устройстве",
+            "Device name saved on this device",
+        ),
+    )
+}
+
+internal fun AppUiRuntime.localDeviceSessions(devices: List<com.noki.vpn.data.DeviceSession>) =
+    DeviceLocalNamePolicy.apply(devices, repository.loadLocalDeviceNames())
+
 internal fun AppUiRuntime.refreshIncyDevices() {
     if (!uiState.isAuthenticated || uiState.incyDevices.isLoading) return
     val launched = launchAuthenticatedDeviceOperation(
@@ -534,11 +556,13 @@ internal fun AppUiRuntime.applyDeviceListActionResult(
         is DeviceActionCoordinator.ActionResult.Success -> {
             syncedDevices = result.value
             uiState = uiState.copy(
-                devices = BootstrapStateMapper.mapDevices(
-                    result.value,
-                    language,
-                    backendDeviceId,
-                    backendDeviceKey,
+                devices = localDeviceSessions(
+                    BootstrapStateMapper.mapDevices(
+                        result.value,
+                        language,
+                        backendDeviceId,
+                        backendDeviceKey,
+                    ),
                 ),
                 inlineMessage = successMessage,
             )

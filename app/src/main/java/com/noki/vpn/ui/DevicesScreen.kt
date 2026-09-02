@@ -3,6 +3,8 @@ package com.noki.vpn.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -22,6 +24,10 @@ import androidx.compose.material3.LocalTextStyle
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -64,6 +70,7 @@ fun DevicesScreen(
     CompositionLocalProvider(LocalTextStyle provides DevicesNoFontPaddingTextStyle) {
         val hasDeviceModal = state.dialog == AppDialog.LogoutOthers ||
             state.dialog is AppDialog.RemoveDevice ||
+            state.dialog is AppDialog.RenameDevice ||
             !state.inviteDeviceForm.generatedInviteCode.isNullOrBlank() ||
             state.incyDevices.isCreateDialogVisible ||
             state.incyDevices.isManageDialogVisible
@@ -153,6 +160,7 @@ fun DevicesScreen(
                                     backdrop = cardBackdrop,
                                     liveGlassEnabled = liveGlassEnabled,
                                     scale = scale,
+                                    onRenameClick = { currentDevice?.id?.let(viewModel::requestRenameDevice) },
                                 )
                             }
                             RemoveAllDevicesButton(
@@ -224,7 +232,26 @@ fun DevicesScreen(
                     liveGlassEnabled = liveGlassEnabled,
                     onDismiss = viewModel::dismissDialog,
                     onFullAccessChanged = viewModel::setDeviceFullAccess,
+                    onRename = { viewModel.requestRenameDevice(dialog.deviceId) },
                     onConfirm = viewModel::confirmDialog,
+                )
+            }
+
+            (state.dialog as? AppDialog.RenameDevice)?.let { dialog ->
+                val device = state.devices.firstOrNull { it.id == dialog.deviceId }
+                var name by remember(dialog.deviceId) { mutableStateOf(device?.title.orEmpty()) }
+                SettingsCompactInputDialog(
+                    value = name,
+                    onValueChange = { name = it },
+                    placeholder = tr(language, "Название устройства", "Device name"),
+                    dismissText = tr(language, "Отменить", "Cancel"),
+                    confirmText = tr(language, "Сохранить", "Save"),
+                    scale = scale,
+                    backdrop = modalBackdrop,
+                    liveGlassEnabled = liveGlassEnabled,
+                    maxLength = 80,
+                    onDismiss = viewModel::dismissDialog,
+                    onConfirm = { viewModel.renameDeviceLocally(dialog.deviceId, name) },
                 )
             }
 
@@ -330,6 +357,7 @@ private fun CurrentDeviceCard(
     backdrop: LayerBackdrop?,
     liveGlassEnabled: Boolean,
     scale: Float,
+    onRenameClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(devicesDp(24f, scale))
     val isActive = device?.isActive ?: true
@@ -353,6 +381,12 @@ private fun CurrentDeviceCard(
                         surfaceColor = DevicesBgLighter.copy(alpha = 0.80f),
                     )
                 }
+            )
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                enabled = device != null,
+                onClick = onRenameClick,
             )
             .padding(horizontal = devicesDp(20f, scale)),
         contentAlignment = Alignment.CenterStart,
@@ -387,6 +421,14 @@ private fun CurrentDeviceCard(
                     titleFontSize = 18f,
                     scale = scale,
                     modifier = Modifier.weight(1f),
+                )
+                DevicesText(
+                    text = tr(language, "Переименовать", "Rename"),
+                    fontSize = 11f,
+                    lineHeight = 13f,
+                    color = DevicesAccentPrimary,
+                    scale = scale,
+                    modifier = Modifier,
                 )
             }
         }

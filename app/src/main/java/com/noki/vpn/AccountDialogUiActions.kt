@@ -57,6 +57,7 @@ internal fun AppUiRuntime.confirmDialog() {
         AppDialog.Logout -> confirmLogoutDialog()
         AppDialog.LogoutOthers -> confirmLogoutOthersDialog()
         is AppDialog.RemoveDevice -> confirmRemoveDeviceDialog(dialog.deviceId)
+        is AppDialog.RenameDevice -> Unit
         AppDialog.AccessDenied -> dismissDialog()
         AppDialog.FreeTrafficLimitReached -> {
             uiState = uiState.copy(dialog = null, inlineMessage = null)

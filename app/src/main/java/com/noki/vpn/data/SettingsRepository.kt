@@ -7,6 +7,7 @@ import android.os.Build
 import android.util.Base64
 import androidx.core.content.edit
 import com.noki.vpn.FcmRegistrationStatePolicy
+import org.json.JSONObject
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.Locale
@@ -43,6 +44,25 @@ class SettingsRepository(private val context: Context) : VpnSessionStore, Endpoi
     private val settingsCodec = StoredSettingsCodec(::defaultSettings)
     private val cipher = SettingsCipher()
     private val markersStore = SettingsMarkersStore(preferences, ::appVersionCode)
+
+    fun loadLocalDeviceNames(): Map<String, String> = synchronized(LOCAL_DEVICE_NAMES_LOCK) {
+        val json = preferences.getString(KEY_LOCAL_DEVICE_NAMES_ENCRYPTED, null)
+            ?.let(cipher::decrypt)
+            ?.let { runCatching(::JSONObject).getOrNull() }
+            ?: return@synchronized emptyMap()
+        buildMap {
+            json.keys().forEach { deviceId ->
+                json.optString(deviceId).trim().takeIf(String::isNotBlank)?.let { put(deviceId, it) }
+            }
+        }
+    }
+
+    fun saveLocalDeviceName(deviceId: String, name: String) = synchronized(LOCAL_DEVICE_NAMES_LOCK) {
+        val names = loadLocalDeviceNames().toMutableMap().apply { put(deviceId, name) }
+        preferences.edit {
+            putString(KEY_LOCAL_DEVICE_NAMES_ENCRYPTED, cipher.encrypt(JSONObject(names).toString()))
+        }
+    }
 
     fun clearVpnRuntimeState() = markersStore.clearVpnRuntimeState()
 
@@ -865,6 +885,7 @@ class SettingsRepository(private val context: Context) : VpnSessionStore, Endpoi
         val TEMPORARY_VPN_LEASE_LOCK = Any()
         val PENDING_LOGOUT_REVOCATION_LOCK = Any()
         val APP_NOTIFICATION_HISTORY_LOCK = Any()
+        val LOCAL_DEVICE_NAMES_LOCK = Any()
         const val KEY_ENCRYPTED_SETTINGS = "settings_json_encrypted_v2"
         const val KEY_SETTINGS = "settings_json"
         const val KEY_DAILY_STATS_ENCRYPTED = "daily_stats_json_encrypted_v1"
@@ -883,5 +904,6 @@ class SettingsRepository(private val context: Context) : VpnSessionStore, Endpoi
             "pending_logout_revocations_encrypted_v1"
         const val KEY_APP_NOTIFICATION_HISTORY_ENCRYPTED_PREFIX =
             "app_notification_history_encrypted_v2_"
+        const val KEY_LOCAL_DEVICE_NAMES_ENCRYPTED = "local_device_names_encrypted_v1"
     }
 }

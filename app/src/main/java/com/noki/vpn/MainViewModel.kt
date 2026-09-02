@@ -266,6 +266,10 @@ class MainViewModel(
 
     fun requestRemoveDevice(deviceId: String) = runtime.requestRemoveDevice(deviceId)
 
+    fun requestRenameDevice(deviceId: String) = runtime.requestRenameDevice(deviceId)
+
+    fun renameDeviceLocally(deviceId: String, name: String) = runtime.renameDeviceLocally(deviceId, name)
+
     fun setDeviceFullAccess(deviceId: String, fullAccess: Boolean) = runtime.setDeviceFullAccess(deviceId, fullAccess)
 
     fun requestLogoutOthers() = runtime.requestLogoutOthers()

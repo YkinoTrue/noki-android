@@ -147,7 +147,7 @@ internal fun AppUiRuntime.applyBackendSyncResult(
             preserveAndroidUpdate = preserveAndroidUpdate,
         ),
         clientLatencyByTarget = clientLatencyByTarget,
-    )
+    ).let { it.copy(devices = localDeviceSessions(it.devices)) }
     when (trigger) {
         BackendRefreshTrigger.Stats -> {
             uiState = merged.copy(dailyStats = repository.loadDailyStats())
@@ -253,7 +253,9 @@ internal suspend fun AppUiRuntime.syncFromBackendState(
         throw revoked
     }
     applyBackendSyncMetadata(result)
-    return BackendSyncStateReducer.apply(baseState, result.patch)
+    return BackendSyncStateReducer.apply(baseState, result.patch).let {
+        it.copy(devices = localDeviceSessions(it.devices))
+    }
 }
 
 internal fun AppUiRuntime.applyBackendSyncMetadata(result: BackendSyncResult) {

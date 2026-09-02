@@ -3,6 +3,7 @@ local.properties
 sha-256 key/
 .env
 .env.*
+google-services.json
 *.key
 *.jks
 *.keystore
