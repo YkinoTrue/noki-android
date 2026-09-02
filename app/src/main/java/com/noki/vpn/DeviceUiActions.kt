@@ -178,7 +178,11 @@ internal fun AppUiRuntime.requestRenameDevice(deviceId: String) {
 internal fun AppUiRuntime.renameDeviceLocally(deviceId: String, value: String) {
     val name = DeviceLocalNamePolicy.normalize(value)
     if (name.isBlank()) return
-    repository.saveLocalDeviceName(deviceId, name)
+    val stableKey = syncedDevices.firstOrNull { it.id == deviceId }
+        ?.deviceKey
+        ?.takeIf(String::isNotBlank)
+        ?: deviceId
+    repository.saveLocalDeviceName(stableKey, name)
     uiState = uiState.copy(
         devices = DeviceLocalNamePolicy.apply(uiState.devices, mapOf(deviceId to name)),
         dialog = null,
@@ -191,7 +195,14 @@ internal fun AppUiRuntime.renameDeviceLocally(deviceId: String, value: String) {
 }
 
 internal fun AppUiRuntime.localDeviceSessions(devices: List<com.noki.vpn.data.DeviceSession>) =
-    DeviceLocalNamePolicy.apply(devices, repository.loadLocalDeviceNames())
+    DeviceLocalNamePolicy.apply(
+        devices,
+        DeviceLocalNamePolicy.aliasesByDeviceId(
+            devices = devices,
+            backendDevices = syncedDevices,
+            storedNames = repository.loadLocalDeviceNames(),
+        ),
+    )
 
 internal fun AppUiRuntime.refreshIncyDevices() {
     if (!uiState.isAuthenticated || uiState.incyDevices.isLoading) return

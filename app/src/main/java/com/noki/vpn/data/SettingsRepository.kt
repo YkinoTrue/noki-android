@@ -57,8 +57,8 @@ class SettingsRepository(private val context: Context) : VpnSessionStore, Endpoi
         }
     }
 
-    fun saveLocalDeviceName(deviceId: String, name: String) = synchronized(LOCAL_DEVICE_NAMES_LOCK) {
-        val names = loadLocalDeviceNames().toMutableMap().apply { put(deviceId, name) }
+    fun saveLocalDeviceName(deviceIdentity: String, name: String) = synchronized(LOCAL_DEVICE_NAMES_LOCK) {
+        val names = loadLocalDeviceNames().toMutableMap().apply { put(deviceIdentity, name) }
         preferences.edit {
             putString(KEY_LOCAL_DEVICE_NAMES_ENCRYPTED, cipher.encrypt(JSONObject(names).toString()))
         }

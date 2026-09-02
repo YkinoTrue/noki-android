@@ -1,6 +1,7 @@
 package com.noki.vpn
 
 import com.noki.vpn.data.DeviceSession
+import com.noki.vpn.data.BackendDevice
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -34,5 +35,32 @@ class DeviceWorkflowCoordinatorTest {
         assertEquals("Galaxy S24", renamed[0].title)
         assertEquals("Рабочий телефон", renamed[1].title)
         assertEquals("Pixel 9", devices[1].title)
+    }
+
+    @Test
+    fun `local device name follows stable key after backend id refresh`() {
+        val refreshedDevices = listOf(
+            DeviceSession("new-id", "Pixel 9", "Android", isCurrent = true, isOnline = true),
+        )
+        val backendDevices = listOf(
+            BackendDevice(
+                id = "new-id",
+                deviceKey = "stable-key",
+                deviceName = "Pixel 9",
+                platform = "android",
+                accessRole = "owner",
+                isActive = true,
+                lastSeenAt = null,
+            ),
+        )
+
+        val aliases = DeviceLocalNamePolicy.aliasesByDeviceId(
+            devices = refreshedDevices,
+            backendDevices = backendDevices,
+            storedNames = mapOf("stable-key" to "Work phone"),
+        )
+        val renamed = DeviceLocalNamePolicy.apply(refreshedDevices, aliases)
+
+        assertEquals("Work phone", renamed.single().title)
     }
 }
