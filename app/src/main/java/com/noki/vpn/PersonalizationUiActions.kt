@@ -81,6 +81,7 @@ internal fun AppUiRuntime.uploadCroppedAvatar(
     cropScale: Float,
     cropOffsetX: Float,
     cropOffsetY: Float,
+    rotationQuarterTurns: Int,
 ) {
     val language = uiState.personalizationSettings.language
     if (denyAvatarEditIfInvited()) return
@@ -109,6 +110,7 @@ internal fun AppUiRuntime.uploadCroppedAvatar(
                 cropScale = cropScale,
                 cropOffsetX = cropOffsetX,
                 cropOffsetY = cropOffsetY,
+                rotationQuarterTurns = rotationQuarterTurns,
             ),
         )
     }

@@ -24,6 +24,34 @@ import org.junit.Test
 
 class VpnConnectionOrchestratorTest {
     @Test
+    fun `invalidated lifecycle cannot deliver an owned completion`() = runBlocking {
+        val store = InMemorySettingsStore()
+        val orchestrator = VpnConnectionOrchestrator(
+            xray = RecordingXrayRuntime(mutableListOf()),
+            tunFactory = UnusedTunInterfaceFactory,
+            preparer = unusedPreparer(store),
+            settings = VpnSettingsCommitCoordinator(store),
+            sidecars = RecordingConnectedSidecars(mutableListOf()),
+        )
+        val finishCleanup = CompletableDeferred<Unit>()
+        var completions = 0
+        val stop = orchestrator.launchTransition(
+            scope = this,
+            operation = VpnConnectionOperation.STOP,
+            onOwnedCompletion = { completions += 1 },
+            onError = { _, error -> throw error },
+        ) { finishCleanup.await() }
+        yield()
+
+        orchestrator.invalidate()
+        finishCleanup.complete(Unit)
+        stop.join()
+
+        assertEquals("destroyed lifecycle must not resume a queued START", 0, completions)
+        assertEquals(VpnTransitionSnapshot(false, null), orchestrator.transitionSnapshot())
+    }
+
+    @Test
     fun `concurrent replacement keeps the newest transition registered`() = runBlocking {
         val firstCancellationEntered = CountDownLatch(1)
         val releaseFirstCancellation = CountDownLatch(1)

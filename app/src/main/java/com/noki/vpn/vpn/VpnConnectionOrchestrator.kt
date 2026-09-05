@@ -65,11 +65,11 @@ internal class VpnConnectionOrchestrator(
         scope: CoroutineScope,
         operation: VpnConnectionOperation,
         awaitPrevious: Boolean = false,
-        onOwnedCompletion: () -> Unit = {},
+        onOwnedCompletion: (Long) -> Unit = {},
         onError: suspend (Long, Throwable) -> Unit,
         block: suspend (Long) -> Unit,
     ): Job {
-        val job = synchronized(transitionLaunchLock) {
+        val (job, generationId) = synchronized(transitionLaunchLock) {
             val generationId = lifecycleGeneration.begin()
             val previous = synchronized(this) {
                 transitionJob.also { it?.cancel() }
@@ -89,7 +89,7 @@ internal class VpnConnectionOrchestrator(
                 transitionJob = replacement
                 transitionOperation = operation
             }
-            replacement
+            replacement to generationId
         }
         job.invokeOnCompletion {
             val owned = synchronized(this) {
@@ -101,7 +101,7 @@ internal class VpnConnectionOrchestrator(
                     false
                 }
             }
-            if (owned) onOwnedCompletion()
+            if (owned && lifecycleGeneration.isCurrent(generationId)) onOwnedCompletion(generationId)
         }
         job.start()
         return job

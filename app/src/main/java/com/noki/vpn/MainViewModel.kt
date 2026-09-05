@@ -208,7 +208,8 @@ class MainViewModel(
         cropScale: Float,
         cropOffsetX: Float,
         cropOffsetY: Float,
-    ) = runtime.uploadCroppedAvatar(sourceUri, previewWidthPx, previewHeightPx, cropCircleSizePx, cropScale, cropOffsetX, cropOffsetY)
+        rotationQuarterTurns: Int,
+    ) = runtime.uploadCroppedAvatar(sourceUri, previewWidthPx, previewHeightPx, cropCircleSizePx, cropScale, cropOffsetX, cropOffsetY, rotationQuarterTurns)
 
     fun deleteAvatar() = runtime.deleteAvatar()
 

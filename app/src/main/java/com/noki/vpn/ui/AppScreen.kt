@@ -529,7 +529,7 @@ fun AppScreen(
                 isUploading = state.isUploadingAvatar,
                 message = state.avatarUploadMessage,
                 onCancel = viewModel::cancelAvatarCrop,
-                onConfirm = { previewWidthPx, previewHeightPx, cropCircleSizePx, cropScale, cropOffsetX, cropOffsetY ->
+                onConfirm = { previewWidthPx, previewHeightPx, cropCircleSizePx, cropScale, cropOffsetX, cropOffsetY, rotationQuarterTurns ->
                     viewModel.uploadCroppedAvatar(
                         sourceUri = sourceUri,
                         previewWidthPx = previewWidthPx,
@@ -538,6 +538,7 @@ fun AppScreen(
                         cropScale = cropScale,
                         cropOffsetX = cropOffsetX,
                         cropOffsetY = cropOffsetY,
+                        rotationQuarterTurns = rotationQuarterTurns,
                     )
                 },
             )

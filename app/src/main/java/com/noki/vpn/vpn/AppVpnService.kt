@@ -346,15 +346,6 @@ class AppVpnService : VpnService() {
         forceRefreshSession: Boolean,
         allowCachedFallback: Boolean,
     ) {
-        if (tunnel != null && currentState == VpnConnectionState.CONNECTED) {
-            if (forceRefreshSession) {
-                refreshConnectedVpn(allowCachedFallback = allowCachedFallback)
-                return
-            }
-            broadcastCurrentState()
-            updateActiveNotification()
-            return
-        }
         val transition = connectionOrchestrator.transitionSnapshot()
         if (transition.active) {
             val activeOperation = when (transition.operation) {
@@ -367,7 +358,20 @@ class AppVpnService : VpnService() {
             ) {
                 pendingStartOptions = VpnServiceStartCommandPolicy.StartOptions(forceRefreshSession, allowCachedFallback)
             }
+            // STOP may have released the tunnel but still be staging a revoke.
+            // A state query can stopSelf in that gap; an admitted START must wait.
+            broadcastState(currentState)
+            return
+        }
+
+        pendingStartOptions = null
+        if (tunnel != null && currentState == VpnConnectionState.CONNECTED) {
+            if (forceRefreshSession) {
+                refreshConnectedVpn(allowCachedFallback = allowCachedFallback)
+                return
+            }
             broadcastCurrentState()
+            updateActiveNotification()
             return
         }
 
@@ -387,13 +391,6 @@ class AppVpnService : VpnService() {
     }
 
     private fun startTemporaryVpn() {
-        if (tunnel != null && currentState == VpnConnectionState.CONNECTED) {
-            if (currentRuntimeMode == VpnRuntimeMode.AUTH_TEMP) {
-                broadcastCurrentState()
-                updateActiveNotification()
-            }
-            return
-        }
         val transition = connectionOrchestrator.transitionSnapshot()
         if (transition.active) {
             val activeOperation = when (transition.operation) {
@@ -410,7 +407,16 @@ class AppVpnService : VpnService() {
                     runtimeMode = VpnRuntimeMode.AUTH_TEMP,
                 )
             }
-            broadcastCurrentState()
+            broadcastState(currentState)
+            return
+        }
+
+        pendingStartOptions = null
+        if (tunnel != null && currentState == VpnConnectionState.CONNECTED) {
+            if (currentRuntimeMode == VpnRuntimeMode.AUTH_TEMP) {
+                broadcastCurrentState()
+                updateActiveNotification()
+            }
             return
         }
 
@@ -2119,14 +2125,15 @@ class AppVpnService : VpnService() {
             scope = backgroundScope,
             operation = VpnConnectionOperation.STOP,
             awaitPrevious = true,
-            onOwnedCompletion = {
+            onOwnedCompletion = { generationId ->
                 if (revokeTemporaryLease) {
                     backgroundScope.launch { temporaryVpnCoordinator.retryPendingRevoke() }
                 }
-                val pending = synchronized(this@AppVpnService) {
-                    pendingStartOptions.also { pendingStartOptions = null }
-                }
                 notificationHandler.post {
+                    // START/STOP delivery and pending consumption share the main
+                    // thread. A newer command or destroy invalidates this cleanup.
+                    if (!connectionOrchestrator.isCurrent(generationId)) return@post
+                    val pending = pendingStartOptions.also { pendingStartOptions = null }
                     if (pending != null) {
                         if (pending.runtimeMode == VpnRuntimeMode.AUTH_TEMP) {
                             startTemporaryVpn()

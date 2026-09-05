@@ -7,15 +7,15 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.noki.vpn.data.BackendAppNotification
-import kotlin.math.absoluteValue
 
 object AppBroadcastNotifier {
     private const val CHANNEL_ID = "noki_app_broadcasts_high_v1"
-    private const val NOTIFICATION_ID_BASE = 52_000
+    private const val NOTIFICATION_ID = 52_000
 
     fun show(
         context: Context,
@@ -44,6 +44,11 @@ object AppBroadcastNotifier {
             context,
             0,
             Intent(context, MainActivity::class.java).apply {
+                data = Uri.Builder()
+                    .scheme("noki")
+                    .authority("app-notification")
+                    .appendPath(notification.id)
+                    .build()
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 notification.action?.takeIf { it.isNotBlank() }?.let { action ->
                     putExtra(MainActivity.EXTRA_APP_NOTIFICATION_ACTION, action)
@@ -72,9 +77,7 @@ object AppBroadcastNotifier {
             .setAutoCancel(true)
             .build()
 
-        val notificationOffset = (notification.id.hashCode().toLong().absoluteValue % 10_000L).toInt()
-        val notificationId = NOTIFICATION_ID_BASE + notificationOffset
-        manager.notify(notificationId, androidNotification)
+        manager.notify(notification.id, NOTIFICATION_ID, androidNotification)
         return true
     }
 }

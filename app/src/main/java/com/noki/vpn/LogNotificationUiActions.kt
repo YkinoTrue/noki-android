@@ -69,7 +69,7 @@ internal fun AppUiRuntime.uploadLocalLogs() {
             manualLogUploadPending = true
             uiState = uiState.copy(
                 isUploadingLogs = true,
-                logUploadMessage = tr(language, "РћС‚РїСЂР°РІРєР° Р»РѕРіРѕРІвЂ¦", "Sending logsвЂ¦"),
+                logUploadMessage = tr(language, "Отправка логов…", "Sending logs…"),
             )
             logUploadJob?.cancel()
             return

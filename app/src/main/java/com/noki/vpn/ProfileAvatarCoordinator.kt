@@ -22,6 +22,8 @@ import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import kotlin.math.max
+import kotlin.math.min
 
 internal data class AvatarCropRequest(
     val sourceUri: String,
@@ -31,7 +33,43 @@ internal data class AvatarCropRequest(
     val cropScale: Float,
     val cropOffsetX: Float,
     val cropOffsetY: Float,
-)
+    val rotationQuarterTurns: Int = 0,
+) {
+    private val quarterTurns: Int get() = Math.floorMod(rotationQuarterTurns, 4)
+
+    private fun imageScale(width: Int, height: Int): Float {
+        require(width > 0 && height > 0)
+        val rotatedWidth = if (quarterTurns % 2 == 0) width else height
+        val rotatedHeight = if (quarterTurns % 2 == 0) height else width
+        val fit = min(previewWidthPx / rotatedWidth, previewHeightPx / rotatedHeight)
+        val cover = max(cropCircleSizePx / rotatedWidth, cropCircleSizePx / rotatedHeight)
+        return max(fit, cover) * (cropScale.takeIf(Float::isFinite)?.coerceIn(1f, 5f) ?: 1f)
+    }
+
+    fun clampOffsets(width: Int, height: Int): AvatarCropRequest {
+        val scale = imageScale(width, height)
+        val rotatedWidth = if (quarterTurns % 2 == 0) width else height
+        val rotatedHeight = if (quarterTurns % 2 == 0) height else width
+        val maxX = max(0f, (rotatedWidth * scale - cropCircleSizePx) / 2f)
+        val maxY = max(0f, (rotatedHeight * scale - cropCircleSizePx) / 2f)
+        return copy(
+            cropOffsetX = (cropOffsetX.takeIf(Float::isFinite) ?: 0f).coerceIn(-maxX, maxX),
+            cropOffsetY = (cropOffsetY.takeIf(Float::isFinite) ?: 0f).coerceIn(-maxY, maxY),
+        )
+    }
+
+    // Shared by preview and JPEG export: source pixels -> preview coordinates.
+    fun imageMatrix(width: Int, height: Int): Matrix {
+        val crop = clampOffsets(width, height)
+        val scale = imageScale(width, height)
+        return Matrix().apply {
+            postTranslate(-width / 2f, -height / 2f)
+            postRotate(quarterTurns * 90f)
+            postScale(scale, scale)
+            postTranslate(previewWidthPx / 2f + crop.cropOffsetX, previewHeightPx / 2f + crop.cropOffsetY)
+        }
+    }
+}
 
 internal fun interface ProfileAvatarLoader {
     suspend fun cachedBackendAvatarUri(
@@ -65,8 +103,8 @@ internal object AvatarBitmapDecoder {
 
     fun decode(openStream: () -> InputStream?): Bitmap {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        openStream()?.use { BitmapFactory.decodeStream(it, null, bounds) }
-            ?: throw IllegalStateException("avatar_open_failed")
+        val boundsStream = openStream() ?: throw IllegalStateException("avatar_open_failed")
+        boundsStream.use { BitmapFactory.decodeStream(it, null, bounds) }
         val sample = try {
             inSampleSize(bounds.outWidth, bounds.outHeight)
         } catch (_: IllegalArgumentException) {
@@ -182,20 +220,17 @@ internal class ProfileAvatarCoordinator(
         val cropCircle = request.cropCircleSizePx
             .takeIf { it.isFinite() && it > 0f }
             ?: minOf(previewWidth, previewHeight)
-        val baseScale = minOf(previewWidth / source.width.toFloat(), previewHeight / source.height.toFloat())
-        val userScale = request.cropScale.takeIf(Float::isFinite)?.coerceIn(1f, 5f) ?: 1f
-        val effectiveScale = baseScale * userScale
         val outputScale = outputSize / cropCircle
-        val previewLeft = (previewWidth - source.width * effectiveScale) / 2f +
-            request.cropOffsetX.takeIf(Float::isFinite).orZero()
-        val previewTop = (previewHeight - source.height * effectiveScale) / 2f +
-            request.cropOffsetY.takeIf(Float::isFinite).orZero()
         val cropLeft = (previewWidth - cropCircle) / 2f
         val cropTop = (previewHeight - cropCircle) / 2f
         val output = createBitmap(outputSize, outputSize)
-        val matrix = Matrix().apply {
-            postScale(effectiveScale * outputScale, effectiveScale * outputScale)
-            postTranslate((previewLeft - cropLeft) * outputScale, (previewTop - cropTop) * outputScale)
+        val matrix = request.copy(
+            previewWidthPx = previewWidth,
+            previewHeightPx = previewHeight,
+            cropCircleSizePx = cropCircle,
+        ).imageMatrix(source.width, source.height).apply {
+            postTranslate(-cropLeft, -cropTop)
+            postScale(outputScale, outputScale)
         }
         return try {
             Canvas(output).drawBitmap(source, matrix, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
@@ -208,8 +243,6 @@ internal class ProfileAvatarCoordinator(
             output.recycle()
         }
     }
-
-    private fun Float?.orZero(): Float = this ?: 0f
 
     private fun tr(
         language: AppLanguage,

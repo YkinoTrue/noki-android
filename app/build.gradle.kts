@@ -39,8 +39,8 @@ val googleWebClientId = providers.gradleProperty("noki.googleWebClientId")
     .get()
 val libv2rayAarFile = layout.projectDirectory.file("libs/libv2ray.aar")
 val libv2rayAarSha256 = "CF1D829174C12CD4781725DDDF30347A9231014F18684619208521EBD5B020D4"
-val expectedReleaseVersionCode = 213
-val expectedReleaseVersionName = "0.9.193"
+val expectedReleaseVersionCode = 214
+val expectedReleaseVersionName = "0.9.194"
 
 fun String.toBuildConfigString(): String =
     "\"${replace("\\", "\\\\").replace("\"", "\\\"")}\""
@@ -142,6 +142,10 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
     }
 
     packaging {
@@ -294,6 +298,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.16.1")
     testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test:core-ktx:1.7.0")
     androidTestImplementation("androidx.test:runner:1.7.0")

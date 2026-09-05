@@ -1,6 +1,7 @@
 package com.noki.vpn.ui
 
 import android.graphics.Bitmap
+import android.graphics.Paint
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -18,10 +19,17 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.RotateLeft
+import androidx.compose.material.icons.automirrored.filled.RotateRight
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -32,11 +40,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -44,20 +53,16 @@ import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
 import com.noki.vpn.data.AppLanguage
 import com.noki.vpn.AvatarBitmapDecoder
+import com.noki.vpn.AvatarCropRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.withContext
-import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.roundToInt
 
 @Composable
 fun AvatarCropScreen(
@@ -73,6 +78,7 @@ fun AvatarCropScreen(
         cropScale: Float,
         cropOffsetX: Float,
         cropOffsetY: Float,
+        rotationQuarterTurns: Int,
     ) -> Unit,
 ) {
     val context = LocalContext.current
@@ -96,9 +102,9 @@ fun AvatarCropScreen(
         }
     }
     val bitmap = (preview as? AvatarPreviewState.Ready)?.bitmap
-    val imageBitmap = remember(bitmap) { bitmap?.asImageBitmap() }
     var cropScale by remember(sourceUri) { mutableFloatStateOf(1f) }
     var cropOffset by remember(sourceUri) { mutableStateOf(Offset.Zero) }
+    var rotationQuarterTurns by remember(sourceUri) { mutableIntStateOf(0) }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -108,7 +114,7 @@ fun AvatarCropScreen(
         contentAlignment = Alignment.Center,
     ) {
         val previewWidth = maxWidth
-        val availablePreviewHeight = maxHeight - 170.dp
+        val availablePreviewHeight = (maxHeight - 230.dp).coerceAtLeast(1.dp)
         val previewHeight = when {
             availablePreviewHeight < 360.dp -> availablePreviewHeight
             availablePreviewHeight > 590.dp -> 590.dp
@@ -118,6 +124,21 @@ fun AvatarCropScreen(
         val previewWidthPx = with(density) { previewWidth.toPx() }
         val previewHeightPx = with(density) { previewHeight.toPx() }
         val cropCircleSizePx = with(density) { cropCircleSize.toPx() }
+        val crop = AvatarCropRequest(
+            sourceUri = sourceUri,
+            previewWidthPx = previewWidthPx,
+            previewHeightPx = previewHeightPx,
+            cropCircleSizePx = cropCircleSizePx,
+            cropScale = cropScale,
+            cropOffsetX = cropOffset.x,
+            cropOffsetY = cropOffset.y,
+            rotationQuarterTurns = rotationQuarterTurns,
+        )
+        val rotate: (Int) -> Unit = { direction ->
+            rotationQuarterTurns = Math.floorMod(rotationQuarterTurns + direction, 4)
+            cropScale = 1f
+            cropOffset = Offset.Zero
+        }
 
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -128,26 +149,23 @@ fun AvatarCropScreen(
                     .size(width = previewWidth, height = previewHeight)
                     .clip(RoundedCornerShape(2.dp))
                     .background(Color.Black)
-                    .pointerInput(imageBitmap, previewWidthPx, previewHeightPx, cropCircleSizePx) {
+                    .pointerInput(bitmap, previewWidthPx, previewHeightPx, cropCircleSizePx, rotationQuarterTurns, isUploading) {
                         detectTransformGestures { _, pan, zoom, _ ->
+                            if (isUploading || bitmap == null) return@detectTransformGestures
                             val nextScale = (cropScale * zoom).coerceIn(1f, 5f)
                             val nextOffset = cropOffset + pan
                             cropScale = nextScale
-                            cropOffset = imageBitmap?.let { image ->
-                                clampAvatarCropOffset(
-                                    offset = nextOffset,
-                                    previewWidthPx = previewWidthPx,
-                                    previewHeightPx = previewHeightPx,
-                                    cropCircleSizePx = cropCircleSizePx,
-                                    image = image,
-                                    cropScale = nextScale,
-                                )
-                            } ?: nextOffset
+                            val clamped = crop.copy(
+                                cropScale = nextScale,
+                                cropOffsetX = nextOffset.x,
+                                cropOffsetY = nextOffset.y,
+                            ).clampOffsets(bitmap.width, bitmap.height)
+                            cropOffset = Offset(clamped.cropOffsetX, clamped.cropOffsetY)
                         }
                     },
                 contentAlignment = Alignment.Center,
             ) {
-                val image = imageBitmap
+                val image = bitmap
                 if (image == null) {
                     AvatarCropText(
                         text = if (preview == AvatarPreviewState.Failed) {
@@ -162,14 +180,29 @@ fun AvatarCropScreen(
                 } else {
                     AvatarCropCanvas(
                         image = image,
-                        cropScale = cropScale,
-                        cropOffset = cropOffset,
-                        cropCircleSizePx = cropCircleSizePx,
+                        crop = crop,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(24.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                AvatarCropRotationButton(
+                    icon = Icons.AutoMirrored.Filled.RotateLeft,
+                    description = tr(language, "Повернуть влево на 90°", "Rotate left 90°"),
+                    enabled = bitmap != null && !isUploading,
+                    onClick = { rotate(-1) },
+                )
+                AvatarCropRotationButton(
+                    icon = Icons.AutoMirrored.Filled.RotateRight,
+                    description = tr(language, "Повернуть вправо на 90°", "Rotate right 90°"),
+                    enabled = bitmap != null && !isUploading,
+                    onClick = { rotate(1) },
+                )
+            }
+            Spacer(modifier = Modifier.height(16.dp))
             message?.takeIf { it.isNotBlank() }?.let {
                 AvatarCropText(
                     text = it,
@@ -190,7 +223,7 @@ fun AvatarCropScreen(
                 )
                 AvatarCropActionButton(
                     text = if (isUploading) "..." else tr(language, "Сохранить", "Save"),
-                    enabled = !isUploading && imageBitmap != null,
+                    enabled = !isUploading && bitmap != null,
                     primary = true,
                     onClick = {
                         onConfirm(
@@ -200,6 +233,7 @@ fun AvatarCropScreen(
                             cropScale,
                             cropOffset.x,
                             cropOffset.y,
+                            rotationQuarterTurns,
                         )
                     },
                 )
@@ -216,20 +250,14 @@ private sealed interface AvatarPreviewState {
 
 @Composable
 private fun AvatarCropCanvas(
-    image: ImageBitmap,
-    cropScale: Float,
-    cropOffset: Offset,
-    cropCircleSizePx: Float,
+    image: Bitmap,
+    crop: AvatarCropRequest,
     modifier: Modifier,
 ) {
+    val paint = remember { Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG) }
     Canvas(modifier = modifier) {
-        val baseScale = min(size.width / image.width.toFloat(), size.height / image.height.toFloat())
-        val displayWidth = image.width * baseScale * cropScale
-        val displayHeight = image.height * baseScale * cropScale
-        val left = (size.width - displayWidth) / 2f + cropOffset.x
-        val top = (size.height - displayHeight) / 2f + cropOffset.y
-        val dstOffset = IntOffset(left.roundToInt(), top.roundToInt())
-        val dstSize = IntSize(displayWidth.roundToInt(), displayHeight.roundToInt())
+        val matrix = crop.imageMatrix(image.width, image.height)
+        val cropCircleSizePx = crop.cropCircleSizePx
         val circleRect = Rect(
             left = (size.width - cropCircleSizePx) / 2f,
             top = (size.height - cropCircleSizePx) / 2f,
@@ -238,19 +266,15 @@ private fun AvatarCropCanvas(
         )
         val circlePath = Path().apply { addOval(circleRect) }
 
-        drawImage(
-            image = image,
-            dstOffset = dstOffset,
-            dstSize = dstSize,
-            alpha = 0.36f,
-        )
+        drawIntoCanvas { canvas ->
+            paint.alpha = 92
+            canvas.nativeCanvas.drawBitmap(image, matrix, paint)
+        }
         clipPath(circlePath) {
-            drawImage(
-                image = image,
-                dstOffset = dstOffset,
-                dstSize = dstSize,
-                alpha = 1f,
-            )
+            drawIntoCanvas { canvas ->
+                paint.alpha = 255
+                canvas.nativeCanvas.drawBitmap(image, matrix, paint)
+            }
         }
         drawPath(
             path = circlePath,
@@ -260,26 +284,29 @@ private fun AvatarCropCanvas(
     }
 }
 
-private fun clampAvatarCropOffset(
-    offset: Offset,
-    previewWidthPx: Float,
-    previewHeightPx: Float,
-    cropCircleSizePx: Float,
-    image: ImageBitmap,
-    cropScale: Float,
-): Offset {
-    val baseScale = min(
-        previewWidthPx / image.width.toFloat(),
-        previewHeightPx / image.height.toFloat(),
-    )
-    val scaledWidth = image.width * baseScale * cropScale
-    val scaledHeight = image.height * baseScale * cropScale
-    val maxX = max(0f, (scaledWidth - cropCircleSizePx) / 2f)
-    val maxY = max(0f, (scaledHeight - cropCircleSizePx) / 2f)
-    return Offset(
-        x = offset.x.coerceIn(-maxX, maxX),
-        y = offset.y.coerceIn(-maxY, maxY),
-    )
+@Composable
+private fun AvatarCropRotationButton(
+    icon: ImageVector,
+    description: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    IconButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.size(48.dp).nokiSettingsActionGlassSurface(
+            shape = CircleShape,
+            backdrop = null,
+            liveGlassEnabled = false,
+        ),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = description,
+            tint = SettingsTextPrimary.copy(alpha = if (enabled) 1f else 0.4f),
+            modifier = Modifier.size(24.dp),
+        )
+    }
 }
 
 @Composable

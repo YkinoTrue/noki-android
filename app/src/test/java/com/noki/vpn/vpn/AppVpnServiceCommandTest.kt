@@ -1,0 +1,228 @@
+package com.noki.vpn.vpn
+
+import android.os.Looper
+import com.noki.vpn.data.AtomicStoredSettingsStore
+import com.noki.vpn.data.BackendVpnSession
+import com.noki.vpn.data.DefaultStoredSettingsFactory
+import com.noki.vpn.data.EndpointRankingPolicy
+import com.noki.vpn.data.StoredSettings
+import com.noki.vpn.data.VpnConnectionState
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
+import java.io.InputStream
+import java.io.OutputStream
+import java.security.Key
+import java.security.KeyStore
+import java.security.KeyStoreSpi
+import java.security.Provider
+import java.security.Security
+import java.security.cert.Certificate
+import java.util.Collections
+import java.util.Date
+import javax.crypto.spec.SecretKeySpec
+import org.junit.After
+import org.junit.Before
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.Robolectric
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.LooperMode
+
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [28])
+@LooperMode(LooperMode.Mode.PAUSED)
+class AppVpnServiceCommandTest {
+    @Before
+    fun provideInMemoryAndroidKeyStore() {
+        Security.addProvider(object : Provider("NokiVpnCommandTest", 1.0, "Test-only Android keystore") {
+            init {
+                put("KeyStore.AndroidKeyStore", InMemoryAndroidKeyStore::class.java.name)
+            }
+        })
+    }
+
+    @After
+    fun removeInMemoryAndroidKeyStore() {
+        Security.removeProvider("NokiVpnCommandTest")
+    }
+
+    @Test
+    fun startAfterTunnelReleaseKeepsServiceAliveUntilStopCleanupCompletes() = runBlocking {
+        val fixture = Fixture(this)
+        val stop = fixture.orchestrator.launchTransition(
+            scope = this,
+            operation = VpnConnectionOperation.STOP,
+            onError = { _, error -> throw error },
+        ) { awaitCancellation() }
+        fixture.orchestrator.withLifecycleLock {
+            fixture.orchestrator.releaseResourcesWhileOwned(VpnConnectionState.DISCONNECTED)
+        }
+        try {
+            fixture.startAccount()
+
+            assertFalse("queued START still needs this service", shadowOf(fixture.service).isStoppedBySelf)
+            assertEquals(VpnServiceStartCommandPolicy.StartOptions(true, false), fixture.pendingStart())
+        } finally {
+            stop.cancel()
+        }
+    }
+
+    @Test
+    fun accountStartWhileConnectedStopIsCleaningUpIsRetained() = runBlocking {
+        val fixture = Fixture(this)
+        val stop = fixture.orchestrator.launchTransition(
+            scope = this,
+            operation = VpnConnectionOperation.STOP,
+            onError = { _, error -> throw error },
+        ) { awaitCancellation() }
+        try {
+            fixture.startAccount()
+
+            assertEquals(
+                VpnServiceStartCommandPolicy.StartOptions(true, false),
+                fixture.pendingStart(),
+            )
+        } finally {
+            stop.cancel()
+        }
+    }
+
+    @Test
+    fun temporaryStartWhileConnectedStopIsCleaningUpIsRetained() = runBlocking {
+        val fixture = Fixture(this)
+        val stop = fixture.orchestrator.launchTransition(
+            scope = this,
+            operation = VpnConnectionOperation.STOP,
+            onError = { _, error -> throw error },
+        ) { awaitCancellation() }
+        try {
+            fixture.invoke("startTemporaryVpn")
+
+            assertEquals(
+                VpnServiceStartCommandPolicy.StartOptions(true, false, VpnRuntimeMode.AUTH_TEMP),
+                fixture.pendingStart(),
+            )
+        } finally {
+            stop.cancel()
+        }
+    }
+
+    @Test
+    fun postedStopCompletionCannotRestoreStartCancelledByNewerStop() = runBlocking {
+        val fixture = Fixture(this)
+        fixture.stop(1)
+        // The START was already admitted while cleanup was in progress. Keep this
+        // regression independent of the separate connected-start admission bug.
+        fixture.set("pendingStartOptions", VpnServiceStartCommandPolicy.StartOptions(true, false))
+        fixture.orchestrator.activeTransitionJob()!!.join()
+
+        fixture.orchestrator.lifecycleMutex.lock()
+        try {
+            fixture.stop(2)
+            val newerStop = fixture.orchestrator.activeTransitionJob()!!
+            yield()
+            fixture.orchestrator.updateState(VpnConnectionState.CONNECTING)
+
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertNull("the newest STOP must not acquire the older queued START", fixture.pendingStart())
+            assertEquals(newerStop, fixture.orchestrator.activeTransitionJob())
+        } finally {
+            fixture.orchestrator.lifecycleMutex.unlock()
+            fixture.orchestrator.activeTransitionJob()?.join()
+        }
+    }
+
+    private class Fixture(scope: CoroutineScope) {
+        val service = Robolectric.buildService(AppVpnService::class.java).get()
+        private val store = object : AtomicStoredSettingsStore {
+            private var value = DefaultStoredSettingsFactory.create()
+            override fun load(): StoredSettings = value
+            override fun updateSettings(transform: (StoredSettings) -> StoredSettings): StoredSettings =
+                transform(value).also { value = it }
+        }
+        private val scheduler = HandlerDelayedTaskScheduler(android.os.Handler(Looper.getMainLooper()))
+        val orchestrator = VpnConnectionOrchestrator(
+            xray = object : XrayRuntime {
+                override fun start(config: String, tunFd: Int): Boolean = error("unexpected native start")
+                override fun stop() = Unit
+                override fun cancelMeasureDelay() = Unit
+                override fun measureDelay(targetUrl: String, timeoutMillis: Long): XrayProbeResult =
+                    error("unexpected native probe")
+            },
+            tunFactory = object : TunInterfaceFactory {
+                override fun establish(settings: StoredSettings, underlay: UnderlyingNetworkSnapshot?): TunHandle? =
+                    error("unexpected tunnel creation")
+            },
+            preparer = VpnConnectionPreparer(
+                store = store,
+                currentNetworkKind = { EndpointRankingPolicy.NetworkKind.OTHER },
+                resolveStart = { _, _, _, _ -> error("unexpected backend call") },
+                refreshAccessToken = { error("unexpected token refresh") },
+            ),
+            settings = VpnSettingsCommitCoordinator(store),
+            sidecars = OwnedVpnConnectedSidecars(onStart = { _, _ -> }, onStop = {}),
+        )
+
+        init {
+            // Do not run onCreate: Android/native adapters are the external
+            // boundary; lifecycle arbitration and command handling remain real.
+            set("connectionOrchestrator", orchestrator)
+            set("backgroundScope", scope)
+            set("delayedTaskScheduler", scheduler)
+            set("warmupController", VpnWarmupController<BackendVpnSession>(scheduler, 1L))
+            set("statsCoordinator", VpnStatsCoordinator(service, scope, scheduler, { null }, { _, _ -> }))
+            orchestrator.updateState(VpnConnectionState.CONNECTED)
+            orchestrator.replaceTunnel(object : TunHandle {
+                override val fd = 7
+                override fun close() = Unit
+            })
+        }
+
+        fun startAccount() = invoke("startVpn", true, false)
+        fun stop(startId: Int) = invoke("stopVpn", startId, false)
+
+        fun pendingStart(): Any? = AppVpnService::class.java.getDeclaredField("pendingStartOptions")
+            .apply { isAccessible = true }.get(service)
+
+        fun set(name: String, value: Any) {
+            AppVpnService::class.java.getDeclaredField(name).apply { isAccessible = true }.set(service, value)
+        }
+
+        fun invoke(name: String, vararg args: Any) {
+            val types = args.map { if (it is Boolean) Boolean::class.javaPrimitiveType else Int::class.javaPrimitiveType }
+            AppVpnService::class.java.getDeclaredMethod(name, *types.toTypedArray())
+                .apply { isAccessible = true }.invoke(service, *args)
+        }
+    }
+
+    // AndroidKeyStore is unavailable on the host JVM. Keep SettingsRepository
+    // and AES/GCM real; replace only the platform key storage boundary.
+    class InMemoryAndroidKeyStore : KeyStoreSpi() {
+        private val key = SecretKeySpec(ByteArray(32) { 1 }, "AES")
+        override fun engineGetEntry(alias: String?, protection: KeyStore.ProtectionParameter?) = KeyStore.SecretKeyEntry(key)
+        override fun engineGetKey(alias: String?, password: CharArray?): Key = key
+        override fun engineLoad(stream: InputStream?, password: CharArray?) = Unit
+        override fun engineContainsAlias(alias: String?) = alias == "noki_settings_aes"
+        override fun engineAliases() = Collections.enumeration(listOf("noki_settings_aes"))
+        override fun engineSize() = 1
+        override fun engineIsKeyEntry(alias: String?) = engineContainsAlias(alias)
+        override fun engineIsCertificateEntry(alias: String?) = false
+        override fun engineGetCertificate(alias: String?): Certificate? = null
+        override fun engineGetCertificateChain(alias: String?): Array<Certificate>? = null
+        override fun engineGetCertificateAlias(certificate: Certificate?): String? = null
+        override fun engineGetCreationDate(alias: String?) = Date(0)
+        override fun engineSetKeyEntry(alias: String?, key: Key?, password: CharArray?, chain: Array<Certificate>?) = error("not needed")
+        override fun engineSetKeyEntry(alias: String?, key: ByteArray?, chain: Array<Certificate>?) = error("not needed")
+        override fun engineSetCertificateEntry(alias: String?, certificate: Certificate?) = error("not needed")
+        override fun engineDeleteEntry(alias: String?) = error("not needed")
+        override fun engineStore(stream: OutputStream?, password: CharArray?) = error("not needed")
+    }
+}
